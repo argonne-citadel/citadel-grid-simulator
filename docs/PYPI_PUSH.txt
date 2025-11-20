@@ -1,0 +1,63 @@
+PyPI Publishing Instructions for grid-stix
+==========================================
+
+Prerequisites
+-------------
+1. PyPI account: https://pypi.org/account/register/
+2. TestPyPI account (optional): https://test.pypi.org/account/register/
+3. API tokens configured (recommended over username/password)
+4. Install build tools: pip install build twine
+
+Build Package
+-------------
+1. make pipbuild 
+
+Test Upload (Optional but Recommended)
+--------------------------------------
+Upload to TestPyPI first to verify everything works:
+
+1. Upload to TestPyPI:
+   twine upload --repository testpypi dist/*
+
+2. Test installation from TestPyPI:
+   pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ citadel-simulator 
+
+Production Upload
+-----------------
+1. Configure ~/.pypirc:
+   [pypi]
+   username = __token__
+   password = pypi-YOUR-TOKEN-HERE
+
+2. Upload to PyPI:
+   twine upload dist/*
+
+3. Verify the upload:
+   pip install citadel-simulator 
+   python -c "import citadel_simulator; print(citadel_simulator.__version__)"
+
+Version Bumping
+---------------
+Before each release, update the version in pyproject.toml:
+   version = "X.Y.Z"
+
+Follow semantic versioning:
+- MAJOR (X): Breaking API changes
+- MINOR (Y): New features, backward compatible
+- PATCH (Z): Bug fixes, backward compatible
+
+Troubleshooting
+---------------
+- "File already exists": You cannot overwrite existing versions on PyPI.
+  Bump the version number and rebuild.
+
+- "Invalid credentials": Ensure you're using __token__ as username
+  and your API token (starting with pypi-) as password.
+
+- Package not found after upload: Wait a few minutes for PyPI to index.
+
+References
+----------
+- PyPI: https://pypi.org/project/grid-stix/
+- Packaging guide: https://packaging.python.org/tutorials/packaging-projects/
+- twine docs: https://twine.readthedocs.io/

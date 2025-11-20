@@ -1,0 +1,70 @@
+stages:
+  - build
+  - lint
+  - security
+  - test
+
+default:
+  image: ubuntu:jammy
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}
+    paths:
+      - ~/.cache/pip
+      - ~/micromamba
+      - .pytest_cache/
+
+workflow:
+  rules:
+    - if: $CI_MERGE_REQUEST_ID
+      when: always
+    - when: never
+
+.base_setup: &base_setup
+  before_script:
+    - apt-get update 
+    - apt-get -y install curl make bzip2
+    - curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj bin/micromamba 
+    - bin/micromamba shell init --shell bash --root-prefix=~/micromamba
+    - export MAMBA_EXE="$PWD/bin/micromamba"
+    - export MAMBA_ROOT_PREFIX="$HOME/micromamba"
+    - eval "$($MAMBA_EXE shell hook --shell bash --root-prefix $MAMBA_ROOT_PREFIX)"
+    - make init
+
+build:
+  stage: build
+  <<: *base_setup
+  script:
+    - echo "Environment built successfully"
+  artifacts:
+    paths:
+      - bin/micromamba
+    expire_in: 1 hour
+
+lint:
+  stage: lint
+  needs: [build]
+  <<: *base_setup
+  script:
+    - make lint
+
+security:
+  stage: security
+  needs: [build]
+  <<: *base_setup
+  script:
+    - make security
+
+test:
+  stage: test
+  needs: [build]
+  <<: *base_setup
+  script:
+    - make test
+  coverage: '/TOTAL.+ ([0-9]{1,3}%)/'
+  artifacts:
+    reports:
+      junit: test-results/junit.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: test-results/coverage.xml
+    expire_in: 1 week

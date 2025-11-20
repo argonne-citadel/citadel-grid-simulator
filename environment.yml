@@ -1,0 +1,17 @@
+name: grid-simulator
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - flask=3.1
+  - pandapower=3.2
+  - pydantic=2.12
+  - pymodbus=3.11
+  - python-dotenv=1.2
+  - structlog=25.5
+  - numba=0.62
+  - pip=25.3
+  - pip:
+    - stix2~=3.0.1
+    - grid-stix~=2.6

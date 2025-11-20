@@ -1,0 +1,19 @@
+"""Local settings overrides for the Grid Simulator.
+
+Copy this file to settingslocal.py and modify as needed.
+The settingslocal.py file is gitignored and will override default settings.
+"""
+
+# Example: Change simulation timestep to 50ms
+# TIMESTEP_SECONDS = 0.05
+
+# Example: Change default network configuration
+# DEFAULT_NETWORK_CLASS = 2
+# DEFAULT_TRANSFORMERS = 2
+
+# Example: Change default protocol ports
+# DEFAULT_DNP3_PORT = 20001
+# DEFAULT_MODBUS_PORT = 5502
+
+# Example: Change logging level
+# LOG_LEVEL = "DEBUG"

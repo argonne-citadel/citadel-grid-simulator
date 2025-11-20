@@ -1,0 +1,31 @@
+Process to export to Github with squashed snapshot:
+
+origin: git@github.com:argonne-citadel/citadel-simulator.git 
+
+git switch main
+# move to internal branch you want to export from
+
+git pull --ff-only origin main
+# update internal state
+
+git add -A
+# stage the exact current tree for export (clean snapshot)
+
+# Write the current tree object
+TREE=$(git write-tree)
+
+# Look up the previous public commit (e.g. v1.0 tag on GitHub)
+PARENT=$(git rev-parse github/main)
+
+# Create a new commit whose parent is the previous export commit
+NEWCOMMIT=$(printf "v2.0 public snapshot\n" | git commit-tree "$TREE" -p "$PARENT")
+
+# Advance the local public branch to that new commit
+git update-ref refs/heads/public-main "$NEWCOMMIT"
+
+# Push it to GitHub main
+git push github public-main:main
+
+# Tag it for release
+git tag -a v2.0 -m "v2.0 public snapshot" "$NEWCOMMIT"
+git push github v2.0
