@@ -1,0 +1,15 @@
+# Only include Python package - exclude everything else
+global-exclude *
+
+# Include build files
+include pyproject.toml
+include LICENSE
+include NOTICE
+include README.md
+
+# Include only the Python package
+recursive-include src *.py
+
+# Exclude Python cache files
+global-exclude __pycache__
+global-exclude *.py[co]

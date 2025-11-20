@@ -1,0 +1,166 @@
+"""Tests for DNP3 outstation interface."""
+
+import pytest
+import time
+from models.dickert_lv import DickertLVModel
+from simulator import GridSimulator, SimulatorCommand, CommandType
+from protocols.dnp3_outstation import GridDNP3Outstation
+
+
+class TestDNP3Outstation:
+    """Test suite for DNP3 outstation."""
+
+    @pytest.fixture
+    def simulator(self):
+        """Create a simulator instance for testing."""
+        model = DickertLVModel()
+        net = model.get_network()
+        sim = GridSimulator(net, timestep_seconds=1.0)
+        yield sim
+        sim.stop()
+
+    def test_outstation_initialization(self, simulator):
+        """Test DNP3 outstation can be initialized."""
+        outstation = GridDNP3Outstation(simulator, host="127.0.0.1", port=20001)
+        assert outstation.simulator == simulator
+        assert outstation.host == "127.0.0.1"
+        assert outstation.port == 20001
+        assert outstation.manager is None  # Not started yet
+
+    def test_point_mapping_creation(self, simulator):
+        """Test that point mapping is created correctly."""
+        outstation = GridDNP3Outstation(simulator, host="127.0.0.1", port=20002)
+        outstation._build_point_mapping()
+
+        # Check that buses are mapped
+        assert len(outstation.bus_to_ai_index) > 0
+
+        # Check that lines are mapped
+        assert len(outstation.line_to_ai_index) > 0
+        assert len(outstation.line_to_bi_index) > 0
+
+        # Check that loads are mapped
+        assert len(outstation.load_to_ai_index) > 0
+
+        # Verify mapping ranges
+        for bus_id, ai_idx in outstation.bus_to_ai_index.items():
+            assert 0 <= ai_idx < 1000, f"Bus AI index {ai_idx} out of range"
+
+        for line_id, indices in outstation.line_to_ai_index.items():
+            assert 1000 <= indices["p_from"] < 2000, "Line P AI out of range"
+            assert 2000 <= indices["q_from"] < 3000, "Line Q AI out of range"
+            assert 3000 <= indices["loading"] < 4000, "Line loading AI out of range"
+
+        for line_id, bi_idx in outstation.line_to_bi_index.items():
+            assert 0 <= bi_idx < 1000, f"Line BI index {bi_idx} out of range"
+
+        for load_id, ai_idx in outstation.load_to_ai_index.items():
+            assert 5000 <= ai_idx < 6000, f"Load AI index {ai_idx} out of range"
+
+    def test_database_configuration(self, simulator):
+        """Test that DNP3 database is configured with correct sizes."""
+        outstation = GridDNP3Outstation(simulator, host="127.0.0.1", port=20003)
+        outstation._build_point_mapping()
+        outstation._configure_database()
+
+        # Database should be configured
+        assert outstation.database_config is not None
+
+    def test_get_point_mapping(self, simulator):
+        """Test getting point mapping information."""
+        outstation = GridDNP3Outstation(simulator, host="127.0.0.1", port=20004)
+        outstation._build_point_mapping()
+
+        mapping = outstation.get_point_mapping()
+
+        assert "buses" in mapping
+        assert "lines" in mapping
+        assert "loads" in mapping
+        assert "analog_inputs" in mapping["lines"]
+        assert "binary_inputs" in mapping["lines"]
+
+    def test_update_measurements_without_start(self, simulator):
+        """Test that update_measurements handles not-started state gracefully."""
+        outstation = GridDNP3Outstation(simulator, host="127.0.0.1", port=20005)
+
+        # Should not crash when outstation not started
+        state = {
+            "bus_voltages": {0: 1.0},
+            "line_loading": {0: 50.0},
+            "breaker_status": {0: True},
+        }
+
+        # This should log a warning but not crash
+        outstation.update_measurements(state)
+
+    def test_callback_registration(self, simulator):
+        """Test that outstation can register as a callback."""
+        outstation = GridDNP3Outstation(simulator, host="127.0.0.1", port=20006)
+
+        initial_callbacks = len(simulator.state_update_callbacks)
+        simulator.add_state_callback(outstation.update_measurements)
+
+        assert len(simulator.state_update_callbacks) == initial_callbacks + 1
+        assert outstation.update_measurements in simulator.state_update_callbacks
+
+
+class TestDNP3Integration:
+    """Integration tests for DNP3 with simulator."""
+
+    @pytest.fixture
+    def simulator_with_dnp3(self):
+        """Create simulator with DNP3 outstation."""
+        model = DickertLVModel()
+        net = model.get_network()
+        sim = GridSimulator(net, timestep_seconds=1.0)
+
+        # Note: We don't actually start the DNP3 outstation in tests
+        # to avoid binding to network ports during testing
+        outstation = GridDNP3Outstation(sim, host="127.0.0.1", port=20007)
+        outstation._build_point_mapping()
+
+        yield sim, outstation
+
+        sim.stop()
+
+    def test_simulator_state_capture(self, simulator_with_dnp3):
+        """Test that simulator captures state correctly for DNP3."""
+        sim, outstation = simulator_with_dnp3
+
+        # Run one simulation step
+        sim.step()
+
+        # Get current state
+        state = sim.get_current_state()
+
+        # Verify state has expected keys
+        assert "bus_voltages" in state
+        assert "line_loading" in state
+        assert "breaker_status" in state
+        assert "line_p_from" in state
+        assert "line_q_from" in state
+
+        # Verify we can map these to DNP3 points
+        for bus_id in state["bus_voltages"].keys():
+            assert bus_id in outstation.bus_to_ai_index
+
+        for line_id in state["breaker_status"].keys():
+            assert line_id in outstation.line_to_bi_index
+
+    def test_command_queuing(self, simulator_with_dnp3):
+        """Test that commands can be queued to simulator."""
+        sim, outstation = simulator_with_dnp3
+
+        # Queue a breaker command
+        cmd = SimulatorCommand(command_type=CommandType.OPEN_BREAKER, device_id=0)
+        sim.queue_command(cmd)
+
+        # Process the command
+        sim.step()
+
+        # Verify command was processed
+        assert sim.stats["commands_processed"] > 0
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

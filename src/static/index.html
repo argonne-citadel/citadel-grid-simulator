@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grid Simulator - Real-time Visualization</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <script src="/static/app.js" defer></script>
+</head>
+<body>
+    <div id="header">
+        <h1>Grid Simulator - Real-time Visualization</h1>
+        <div id="status">
+            <div class="status-item">
+                <span class="status-dot" id="status-dot"></span>
+                <span id="status-text">Connecting...</span>
+            </div>
+            <div class="status-item">
+                <span class="metric">Time:</span>
+                <span id="sim-time">--</span>
+            </div>
+            <div class="status-item">
+                <span class="metric">Avg Voltage:</span>
+                <span id="avg-voltage">--</span>
+            </div>
+            <div class="status-item">
+                <span class="metric">Converged:</span>
+                <span id="converged">--</span>
+            </div>
+            <div class="status-item">
+                <span class="metric">Load:</span>
+                <span id="total-load">--</span>
+            </div>
+            <div class="status-item">
+                <span class="metric">Base/Grid:</span>
+                <span id="total-grid">--</span>
+            </div>
+            <div class="status-item">
+                <span class="metric">PV:</span>
+                <span id="total-pv">--</span>
+            </div>
+            <div class="status-item">
+                <span class="metric">Wind:</span>
+                <span id="total-wind">--</span>
+            </div>
+            <div class="status-item">
+                <span class="metric">BESS:</span>
+                <span id="total-bess">--</span>
+            </div>
+        </div>
+    </div>
+
+    <div id="plot-container">
+        <div id="plotly-chart"></div>
+    </div>
+</body>
+</html>
