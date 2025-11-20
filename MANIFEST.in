@@ -10,6 +10,9 @@ include README.md
 # Include only the Python package
 recursive-include src *.py
 
+# Include static web UI files
+recursive-include src/static *.html *.js *.css
+
 # Exclude Python cache files
 global-exclude __pycache__
 global-exclude *.py[co]

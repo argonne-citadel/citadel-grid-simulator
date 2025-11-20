@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "citadel-simulator"
-version = "1.0.4"
+version = "1.0.5"
 description = "CITADEL Critical Infrastructure Simulator"
 readme = "README.md"
 requires-python = ">=3.12"
