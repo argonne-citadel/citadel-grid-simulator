@@ -79,8 +79,8 @@ def test_grid_simulator_single_step():
     # Check that state was captured
     state = simulator.get_current_state()
     assert state is not None
-    assert hasattr(state, 'timestamp')
-    assert hasattr(state, 'converged')
+    assert hasattr(state, "timestamp")
+    assert hasattr(state, "converged")
     assert state.converged is True
 
 

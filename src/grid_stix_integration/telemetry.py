@@ -20,8 +20,8 @@ if str(GRID_STIX_PATH) not in sys.path:
 from grid_stix.events_observables.GridTelemetry import GridTelemetry
 from grid_stix.events_observables.ControlActionEvent import ControlActionEvent
 
-from schemas.state import GridState, BusState, LineState
-from schemas.commands import (
+from ..schemas.state import GridState, BusState, LineState
+from ..schemas.commands import (
     Command,
     BreakerCommand,
     GeneratorCommand,
@@ -101,7 +101,7 @@ class TelemetryConverter:
         return telemetry_objects
 
     def _create_bus_telemetry(
-        self, bus_id: int, bus_state: BusState, timestamp: float
+        self, bus_id: int, bus_state: BusState, timestamp: datetime
     ) -> Optional[GridTelemetry]:
         """Create Grid-STIX telemetry for bus voltage."""
         try:
@@ -118,7 +118,7 @@ class TelemetryConverter:
             telemetry = GridTelemetry(
                 name=f"Bus {bus_id} Voltage",
                 x_measurement_type=["voltage_magnitude"],
-                x_measurement_timestamp=[datetime.fromtimestamp(timestamp).isoformat()],
+                x_measurement_timestamp=[timestamp.isoformat()],
                 x_source_device=source_device,
                 x_value=[float(bus_state.voltage_pu)],
                 x_metric_unit=["per_unit"],
@@ -135,7 +135,7 @@ class TelemetryConverter:
             return None
 
     def _create_line_power_telemetry(
-        self, line_id: int, line_state: LineState, timestamp: float, power_type: str
+        self, line_id: int, line_state: LineState, timestamp: datetime, power_type: str
     ) -> Optional[GridTelemetry]:
         """Create Grid-STIX telemetry for line power flow."""
         try:
@@ -161,7 +161,7 @@ class TelemetryConverter:
             telemetry = GridTelemetry(
                 name=f"Line {line_id} {power_type.capitalize()} Power",
                 x_measurement_type=[measurement_type],
-                x_measurement_timestamp=[datetime.fromtimestamp(timestamp).isoformat()],
+                x_measurement_timestamp=[timestamp.isoformat()],
                 x_source_device=source_device,
                 x_value=[value],
                 x_metric_unit=[unit],
@@ -190,6 +190,7 @@ class TelemetryConverter:
         """
         try:
             # Determine command details based on type
+            action_details: Dict[str, Any]
             if isinstance(command, BreakerCommand):
                 action_type = "breaker_control"
                 target = f"line_{command.line_id}"

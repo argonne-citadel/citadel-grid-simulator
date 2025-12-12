@@ -98,6 +98,7 @@ async def run_with_protocols(
             logger.info(f"DNP3 outstation started on port {dnp3_port}")
 
         # Initialize Modbus server
+        modbus = None
         if enable_modbus:
             logger.info(f"Initializing Modbus TCP server on port {modbus_port}...")
             modbus = GridModbusServer(
@@ -115,6 +116,19 @@ async def run_with_protocols(
             web_thread = web_api.run_async()
             protocol_servers.append(("Web API", web_api))
             logger.info(f"Web visualization API started on port {web_port}")
+
+        # Add callback to update Modbus server with each simulation step
+        if modbus:
+
+            def update_modbus_callback(state):
+                """Update Modbus registers with latest grid state."""
+                try:
+                    modbus.update_measurements()
+                except Exception as e:
+                    logger.error(f"Error updating Modbus server: {e}")
+
+            simulator.add_state_callback(update_modbus_callback)
+            logger.info("Modbus server will be updated with each simulation step")
 
         # Start simulator in threaded mode
         logger.info("Starting grid simulator in background...")
@@ -232,6 +246,83 @@ def export_topology(net):
 
     except Exception as e:
         logger.error(f"Failed to export topology: {e}")
+
+
+def export_topology_from_schema(topology):
+    """Export topology from Topology schema object to JSON for MTU consumption.
+
+    Args:
+        topology: Topology object from engine.get_topology()
+    """
+    try:
+        # Create shared data directory
+        shared_dir = Path("/shared")
+        shared_dir.mkdir(exist_ok=True)
+
+        topology_data: Dict[str, Any] = {
+            "buses": [],
+            "lines": [],
+            "transformers": [],
+            "metadata": {
+                "network_name": topology.name,
+                "base_mva": topology.base_mva,
+                "exported_at": str(Path(__file__).stat().st_mtime),
+            },
+        }
+
+        # Export buses
+        for bus in topology.buses.values():
+            topology_data["buses"].append(
+                {
+                    "index": int(bus.bus_id),
+                    "name": bus.name,
+                    "vn_kv": bus.voltage_nominal_kv,
+                    "in_service": True,
+                    "type": "b",
+                }
+            )
+
+        # Export lines
+        for line in topology.lines.values():
+            topology_data["lines"].append(
+                {
+                    "index": int(line.line_id),
+                    "name": line.name,
+                    "from_bus": int(line.from_bus),
+                    "to_bus": int(line.to_bus),
+                    "length_km": line.length_km if hasattr(line, "length_km") else 0.0,
+                    "in_service": True,
+                }
+            )
+
+        # Export transformers
+        for trafo in topology.transformers.values():
+            topology_data["transformers"].append(
+                {
+                    "index": int(trafo.transformer_id),
+                    "name": trafo.name,
+                    "hv_bus": int(trafo.hv_bus),
+                    "lv_bus": int(trafo.lv_bus),
+                    "sn_mva": trafo.rated_power_mva,
+                    "in_service": True,
+                }
+            )
+
+        # Write to shared file
+        topology_file = shared_dir / "grid_topology.json"
+        with open(topology_file, "w") as f:
+            json.dump(topology_data, f, indent=2)
+
+        logger.info(f"✓ Topology exported to {topology_file}")
+        logger.info(f"  - {len(topology_data['buses'])} buses")
+        logger.info(f"  - {len(topology_data['lines'])} lines")
+        logger.info(f"  - {len(topology_data['transformers'])} transformers")
+
+    except Exception as e:
+        logger.error(f"Failed to export topology from schema: {e}")
+        import traceback
+
+        traceback.print_exc()
 
 
 def _add_der_portfolio(grid_model: DickertLVModel) -> None:
@@ -415,6 +506,77 @@ def _add_der_portfolio(grid_model: DickertLVModel) -> None:
     logger.info("=" * 80)
 
 
+def create_pandapower_model(model_name: str):
+    """Create a PandaPower grid model.
+
+    Args:
+        model_name: Name of the model to create
+
+    Returns:
+        Grid model instance with get_network() method
+
+    Raises:
+        ValueError: If model_name is not supported
+    """
+    if model_name == "dickert-lv":
+        logger.info("Creating Dickert LV network model...")
+        grid_model = DickertLVModel(feeders_range="long", linetype="cable")
+
+        # Add DER portfolio for zero-trust research
+        _add_der_portfolio(grid_model)
+
+        return grid_model
+    else:
+        raise ValueError(
+            f"Unsupported PandaPower model: {model_name}. "
+            f"Supported models: dickert-lv"
+        )
+
+
+def create_engine(engine_type: str, enable_grid_stix: bool = False, **kwargs):
+    """Factory function to create power system engines.
+
+    Args:
+        engine_type: Type of engine ('pandapower', 'opendss', etc.)
+        enable_grid_stix: Whether to enable Grid-STIX annotation
+        **kwargs: Engine-specific arguments
+
+    Returns:
+        PowerSystemEngine instance
+
+    Raises:
+        ValueError: If engine_type is not supported
+    """
+    if engine_type == "pandapower":
+        from .engines.pandapower_engine import PandaPowerEngine
+
+        # PandaPower requires a network object
+        if "network" not in kwargs:
+            raise ValueError("PandaPower engine requires 'network' argument")
+
+        logger.info("Creating PandaPower engine")
+        return PandaPowerEngine(
+            kwargs["network"],
+            enable_grid_stix=enable_grid_stix,
+        )
+
+    elif engine_type == "opendss":
+        from .engines.opendss_engine import OpenDSSEngine
+
+        # OpenDSS requires a DSS file path
+        if "dss_file" not in kwargs:
+            raise ValueError("OpenDSS engine requires 'dss_file' argument")
+
+        logger.info(f"Creating OpenDSS engine with file: {kwargs['dss_file']}")
+        return OpenDSSEngine(kwargs["dss_file"])
+
+    else:
+        raise ValueError(
+            f"Unsupported engine type: {engine_type}. "
+            f"Supported types: pandapower, opendss"
+        )
+
+
 def main():
     """Main function to run the grid simulator."""
     # Parse command line arguments
@@ -424,6 +586,18 @@ def main():
         choices=["standalone", "scada"],
         default="standalone",
         help="Run mode: standalone (no protocols) or scada (with DNP3/Modbus)",
+    )
+    parser.add_argument(
+        "--engine",
+        choices=["pandapower", "opendss"],
+        default="pandapower",
+        help="Power system engine to use (default: pandapower)",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Model to use: for PandaPower, specify model name (default: dickert-lv); for OpenDSS, specify DSS file path (default: /usr/app/examples/IEEE37Bus_PV.dss)",
     )
     parser.add_argument(
         "--dnp3-port",
@@ -463,54 +637,94 @@ def main():
     args = parser.parse_args()
 
     logger.info("=" * 80)
-    logger.info("ZTCard Grid Simulator - Dickert LV Network with DERs")
+    logger.info(f"ZTCard Grid Simulator - {args.engine.upper()} Engine")
     logger.info("=" * 80)
-
-    # Create grid model
-    logger.info("Initializing Dickert LV network model...")
-    try:
-        grid_model = DickertLVModel(feeders_range="long", linetype="cable")
-
-        # Add DER portfolio for zero-trust research
-        _add_der_portfolio(grid_model)
-
-        topology = grid_model.get_topology_info()
-
-        logger.info(f"Network topology:")
-        logger.info(f"  - Buses: {topology['num_buses']}")
-        logger.info(f"  - Lines: {topology['num_lines']}")
-        logger.info(f"  - Loads: {topology['num_loads']}")
-        logger.info(f"  - DERs: {topology['num_ders']}")
-        logger.info(f"  - Storage: {topology['num_storage']}")
-
-        # Get control points for zero-trust policy enforcement
-        control_points = grid_model.get_control_points()
-        logger.info(f"Control points available:")
-        logger.info(f"  - Breakers: {len(control_points['breakers'])}")
-        logger.info(f"  - Loads: {len(control_points['loads'])}")
-        logger.info(f"  - DERs: {len(control_points.get('ders', []))}")
-
-        # Export topology for MTU consumption
-        logger.info("Exporting network topology...")
-        export_topology(grid_model.get_network())
-
-    except Exception as e:
-        logger.error(f"Failed to initialize grid model: {e}")
-        return 1
-
-    # Create engine and simulator using factory pattern
-    logger.info(f"Creating power system engine and simulator...")
-    from .engines.pandapower_engine import PandaPowerEngine
 
     # Enable Grid-STIX if requested
     enable_stix = args.enable_grid_stix or args.export_stix is not None
     if enable_stix:
         logger.info("Grid-STIX annotation enabled")
 
-    engine = PandaPowerEngine(
-        grid_model.get_network(),
-        enable_grid_stix=enable_stix,
-    )
+    # Determine model based on engine and --model argument
+    if args.engine == "pandapower":
+        model_name = args.model if args.model else "dickert-lv"
+    elif args.engine == "opendss":
+        model_path = args.model if args.model else "/usr/app/examples/IEEE37Bus_PV.dss"
+
+    # Create engine based on selected type
+    try:
+        if args.engine == "pandapower":
+            # Create grid model for PandaPower
+            grid_model = create_pandapower_model(model_name)
+
+            topology = grid_model.get_topology_info()
+
+            logger.info(f"Network topology:")
+            logger.info(f"  - Buses: {topology['num_buses']}")
+            logger.info(f"  - Lines: {topology['num_lines']}")
+            logger.info(f"  - Loads: {topology['num_loads']}")
+            logger.info(f"  - DERs: {topology['num_ders']}")
+            logger.info(f"  - Storage: {topology['num_storage']}")
+
+            # Get control points for zero-trust policy enforcement
+            control_points = grid_model.get_control_points()
+            logger.info(f"Control points available:")
+            logger.info(f"  - Breakers: {len(control_points['breakers'])}")
+            logger.info(f"  - Loads: {len(control_points['loads'])}")
+            logger.info(f"  - DERs: {len(control_points.get('ders', []))}")
+
+            # Export topology for MTU consumption
+            logger.info("Exporting network topology...")
+            export_topology(grid_model.get_network())
+
+            # Create PandaPower engine
+            engine = create_engine(
+                "pandapower",
+                enable_grid_stix=enable_stix,
+                network=grid_model.get_network(),
+            )
+
+        elif args.engine == "opendss":
+            # Create OpenDSS engine
+            logger.info(f"Loading OpenDSS circuit from: {model_path}")
+
+            # Verify DSS file exists
+            dss_path = Path(model_path)
+            if not dss_path.exists():
+                logger.error(f"DSS file not found: {model_path}")
+                return 1
+
+            engine = create_engine(
+                "opendss",
+                enable_grid_stix=enable_stix,
+                dss_file=model_path,
+            )
+
+            # Log OpenDSS circuit info
+            topology = engine.get_topology()
+            logger.info(f"OpenDSS circuit loaded: {topology.name}")
+            logger.info(f"  - Buses: {len(topology.buses)}")
+            logger.info(f"  - Lines: {len(topology.lines)}")
+            logger.info(f"  - Loads: {len(topology.loads)}")
+            logger.info(f"  - Generators: {len(topology.generators)}")
+
+            # Export topology for MTU consumption
+            logger.info("Exporting OpenDSS network topology...")
+            export_topology_from_schema(topology)
+
+        else:
+            logger.error(f"Unsupported engine: {args.engine}")
+            return 1
+
+    except Exception as e:
+        logger.error(f"Failed to create engine: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return 1
+
+    # Create simulator
+    logger.info(f"Creating simulator...")
     simulator = GridSimulator(
         engine=engine,
         timestep_seconds=settings.TIMESTEP_SECONDS,

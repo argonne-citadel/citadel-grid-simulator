@@ -26,10 +26,9 @@ def main():
     print("Method 1: Using create_default_simulation()")
     print("-" * 80)
     engine, model_info = create_default_simulation(
-        feeders_range="short",
-        linetype="cable"
+        feeders_range="short", linetype="cable"
     )
-    
+
     print(f"Created simulation:")
     print(f"  Engine: {model_info['engine_type']}")
     print(f"  Model: {model_info['model_type']}")
@@ -47,9 +46,9 @@ def main():
         engine_type="pandapower",
         model_type="dickert_lv",
         feeders_range="middle",
-        linetype="cable"
+        linetype="cable",
     )
-    
+
     print(f"Created simulation:")
     print(f"  Engine: {model_info2['engine_type']}")
     print(f"  Model: {model_info2['model_type']}")
@@ -60,11 +59,9 @@ def main():
     print("Method 3: Using create_engine() directly")
     print("-" * 80)
     engine3 = create_engine(
-        engine_type="pandapower",
-        model_type="dickert_lv",
-        feeders_range="short"
+        engine_type="pandapower", model_type="dickert_lv", feeders_range="short"
     )
-    
+
     topology = engine3.get_topology()
     print(f"Created engine:")
     print(f"  Network: {topology.name}")
@@ -74,13 +71,13 @@ def main():
     # Run a simulation with the first engine
     print("Running simulation with Method 1 engine...")
     print("-" * 80)
-    
+
     config = PowerFlowConfig(
         algorithm=PowerFlowAlgorithm.NEWTON_RAPHSON,
         max_iterations=20,
         tolerance=1e-6,
     )
-    
+
     result = engine.run_simulation(config)
     print(f"  Converged: {result.converged}")
     print(f"  Iterations: {result.iterations}")

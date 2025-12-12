@@ -86,32 +86,34 @@ def main():
     print("Step 6: Sample bus voltages:")
     for bus_id, bus_state in list(state.buses.items())[:5]:
         bus_info = topology.buses[bus_id]
-        print(f"  Bus {bus_id} ({bus_info.name}): {bus_state.voltage_pu:.4f} pu, {bus_state.angle_deg:.2f}°")
+        print(
+            f"  Bus {bus_id} ({bus_info.name}): {bus_state.voltage_pu:.4f} pu, {bus_state.angle_deg:.2f}°"
+        )
     print()
 
     # Step 7: Execute control commands
     print("Step 7: Executing control commands...")
-    
+
     # Adjust a load if available
     if topology.loads:
         load_id = list(topology.loads.keys())[0]
         original_p = topology.loads[load_id].p_mw
         new_p = original_p * 1.2  # Increase by 20%
-        
+
         cmd = LoadCommand(load_id=load_id, p_mw=new_p)
         engine.execute_command(cmd)
         print(f"  ✓ Adjusted Load {load_id}: {original_p:.3f} → {new_p:.3f} MW")
-    
+
     # Adjust a generator if available
     if topology.generators:
         gen_id = list(topology.generators.keys())[0]
         original_p = topology.generators[gen_id].p_max_mw
         new_p = original_p * 0.8  # Reduce to 80%
-        
+
         cmd = GeneratorCommand(generator_id=gen_id, p_mw=new_p)
         engine.execute_command(cmd)
         print(f"  ✓ Adjusted Generator {gen_id}: {original_p:.3f} → {new_p:.3f} MW")
-    
+
     print()
 
     # Step 8: Run power flow again after changes
@@ -134,24 +136,26 @@ def main():
     if topology.lines:
         line_id = list(topology.lines.keys())[0]
         line_info = topology.lines[line_id]
-        
-        print(f"  Line {line_id} ({line_info.name}): {line_info.from_bus} → {line_info.to_bus}")
+
+        print(
+            f"  Line {line_id} ({line_info.name}): {line_info.from_bus} → {line_info.to_bus}"
+        )
         print(f"  Initial status: {'CLOSED' if line_info.in_service else 'OPEN'}")
-        
+
         # Open the breaker
         cmd = BreakerCommand(line_id=line_id, closed=False)
         engine.execute_command(cmd)
         print(f"  ✓ Opened breaker on line {line_id}")
-        
+
         # Run power flow
         result = engine.run_simulation(config)
         print(f"  Power flow converged: {result.converged}")
-        
+
         # Close the breaker again
         cmd = BreakerCommand(line_id=line_id, closed=True)
         engine.execute_command(cmd)
         print(f"  ✓ Closed breaker on line {line_id}")
-    
+
     print()
     print("=" * 80)
     print("Example completed successfully!")

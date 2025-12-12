@@ -1,0 +1,38 @@
+#!/bin/bash
+# Pre-commit hook to run black formatter
+# This ensures code is properly formatted before committing
+
+# Colors for output
+ESC=$(printf '\033')
+COLOR_RESET="${ESC}[0m"
+COLOR_BOLD="${ESC}[1m"
+COLOR_GREEN="${ESC}[32m"
+COLOR_RED="${ESC}[31m"
+COLOR_YELLOW="${ESC}[33m"
+
+echo "${COLOR_BOLD}Running black formatter before commit...${COLOR_RESET}"
+
+# Run make black
+if make black > /dev/null 2>&1; then
+    echo "${COLOR_GREEN}✓ Code formatting complete${COLOR_RESET}"
+    
+    # Check if black made any changes to tracked files
+    if ! git diff --quiet; then
+        echo "${COLOR_YELLOW}⚠ Black made formatting changes - auto-staging formatted files${COLOR_RESET}"
+        
+        # Stage the formatted files
+        git add -u
+        
+        # Show what was changed
+        echo "${COLOR_BOLD}Auto-staged formatted files:${COLOR_RESET}"
+        git diff --cached --name-only | grep -E '\.(py)$' || true
+    else
+        echo "${COLOR_GREEN}✓ No formatting changes needed${COLOR_RESET}"
+    fi
+else
+    echo "${COLOR_RED}✗ Black formatting failed${COLOR_RESET}"
+    echo "${COLOR_RED}Please fix formatting errors before committing${COLOR_RESET}"
+    exit 1
+fi
+
+exit 0

@@ -154,9 +154,9 @@ class TestModbusIntegration:
         state = sim.get_current_state()
 
         # Verify state has expected attributes
-        assert hasattr(state, 'buses')
-        assert hasattr(state, 'lines')
-        assert hasattr(state, 'converged')
+        assert hasattr(state, "buses")
+        assert hasattr(state, "lines")
+        assert hasattr(state, "converged")
         assert state.converged is True
 
         # Verify we can map buses to Modbus registers

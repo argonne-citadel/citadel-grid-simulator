@@ -1,5 +1,6 @@
 *.backup
 *.crt
+*.csv
 *.egg-info
 *.key
 *.log

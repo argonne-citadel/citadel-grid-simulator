@@ -27,7 +27,7 @@ from grid_stix.assets.Transformer import Transformer
 from grid_stix.assets.DistributionLine import DistributionLine
 from grid_stix.assets.Substation import Substation
 
-from schemas.topology import (
+from ..schemas.topology import (
     NetworkTopology,
     BusInfo,
     LineInfo,
@@ -35,7 +35,7 @@ from schemas.topology import (
     LoadInfo,
     StorageInfo,
 )
-from schemas.common import BusID, LineID, GeneratorID, LoadID, StorageID
+from ..schemas.common import BusID, LineID, GeneratorID, LoadID, StorageID
 
 
 class GridSTIXAnnotator:
@@ -89,17 +89,10 @@ class GridSTIXAnnotator:
         try:
             stix_obj = Substation(
                 name=bus_info.name or f"Bus_{bus_id}",
-                x_asset_id=[f"bus_{bus_id}"],
-                x_high_voltage_level_kv=[float(bus_info.vn_kv)],
+                x_high_voltage_level_kv=[float(bus_info.voltage_nominal_kv)],
                 x_substation_type=["distribution"],
-                x_gps_coordinates=(
-                    [f"{bus_info.geo_lat},{bus_info.geo_lon}"]
-                    if bus_info.geo_lat
-                    else ["0,0"]
-                ),
-                x_operational_status=(
-                    "in_service" if bus_info.in_service else "out_of_service"
-                ),
+                x_grid_component_type="substation",
+                x_operational_status="in_service",
             )
 
             self._register_stix_object(f"bus_{bus_id}", stix_obj)
@@ -110,14 +103,14 @@ class GridSTIXAnnotator:
     def _annotate_line(self, line_id: LineID, line_info: LineInfo) -> None:
         """Annotate a line as a Grid-STIX DistributionLine."""
         try:
+            # Estimate line length from resistance (rough approximation: ~0.1 ohm/km for typical distribution lines)
+            estimated_length_km = max(0.1, line_info.resistance_ohm / 0.1)
+
             stix_obj = DistributionLine(
                 name=line_info.name or f"Line_{line_id}",
-                x_asset_id=[f"line_{line_id}"],
-                x_voltage_level_kv=(
-                    [float(line_info.vn_kv)] if line_info.vn_kv else [0.4]
-                ),
-                x_length_km=[float(line_info.length_km)],
-                x_service_area=[line_info.std_type or "unknown"],
+                x_grid_component_type="distribution_line",
+                x_voltage_level_kv=[0.4],  # Default distribution voltage
+                x_length_km=[float(estimated_length_km)],
                 x_operational_status=(
                     "in_service" if line_info.in_service else "out_of_service"
                 ),
@@ -128,54 +121,17 @@ class GridSTIXAnnotator:
             print(f"Warning: Failed to annotate line {line_id}: {e}")
 
     def _annotate_generator(self, gen_id: GeneratorID, gen_info: GeneratorInfo) -> None:
-        """Annotate a generator as a Grid-STIX DER or Generator."""
+        """Annotate a generator as a Grid-STIX Generator."""
         try:
-            # Determine if it's a DER based on type
-            is_der = gen_info.der_type in ["PV", "Wind", "Storage"]
-
-            if is_der:
-                if gen_info.der_type == "PV":
-                    stix_obj = PhotovoltaicSystem(
-                        name=gen_info.name or f"PV_{gen_id}",
-                        x_system_id=[f"gen_{gen_id}"],
-                        x_capacity_kw=[float(gen_info.p_mw * 1000)],
-                        x_panel_type=["unknown"],
-                        x_operational_status=(
-                            "in_service" if gen_info.in_service else "out_of_service"
-                        ),
-                    )
-                elif gen_info.der_type == "Wind":
-                    stix_obj = WindTurbine(
-                        name=gen_info.name or f"Wind_{gen_id}",
-                        x_turbine_id=[f"gen_{gen_id}"],
-                        x_wind_capacity_kw=[float(gen_info.p_mw * 1000)],
-                        x_hub_height_m=[80.0],  # Default
-                        x_operational_status=(
-                            "in_service" if gen_info.in_service else "out_of_service"
-                        ),
-                    )
-                else:  # Generic DER
-                    stix_obj = DistributedEnergyResource(
-                        name=gen_info.name or f"DER_{gen_id}",
-                        x_resource_id=[f"gen_{gen_id}"],
-                        x_resource_type=[gen_info.der_type or "unknown"],
-                        x_capacity_kw=[float(gen_info.p_mw * 1000)],
-                        x_operational_status=(
-                            "in_service" if gen_info.in_service else "out_of_service"
-                        ),
-                    )
-            else:
-                # Traditional generator
-                stix_obj = Generator(
-                    name=gen_info.name or f"Generator_{gen_id}",
-                    x_asset_id=[f"gen_{gen_id}"],
-                    x_power_rating_mw=[float(gen_info.p_mw)],
-                    x_fuel_type=[gen_info.der_type or "unknown"],
-                    x_owner_organization=["utility"],
-                    x_operational_status=(
-                        "in_service" if gen_info.in_service else "out_of_service"
-                    ),
-                )
+            stix_obj = Generator(
+                name=gen_info.name or f"Generator_{gen_id}",
+                x_grid_component_type="generator",
+                x_power_rating_mw=[float(gen_info.p_max_mw)],
+                x_fuel_type=[gen_info.der_type or "unknown"],
+                x_operational_status=(
+                    "in_service" if gen_info.in_service else "out_of_service"
+                ),
+            )
 
             self._register_stix_object(f"gen_{gen_id}", stix_obj)
         except Exception as e:
@@ -186,9 +142,7 @@ class GridSTIXAnnotator:
         try:
             stix_obj = SmartMeter(
                 name=load_info.name or f"Load_{load_id}",
-                x_asset_id=[f"load_{load_id}"],
-                x_ip_address=["192.168.1.1"],  # Placeholder
-                x_mac_address=["00:00:00:00:00:00"],  # Placeholder
+                x_grid_component_type="smart_meter",
                 x_operational_status=(
                     "in_service" if load_info.in_service else "out_of_service"
                 ),
@@ -206,8 +160,8 @@ class GridSTIXAnnotator:
             stix_obj = BatteryEnergyStorageSystem(
                 name=storage_info.name or f"BESS_{storage_id}",
                 x_bess_system_id=[f"storage_{storage_id}"],
-                x_capacity_kwh=[float(storage_info.max_e_mwh * 1000)],
-                x_bess_power_rating_kw=[float(abs(storage_info.p_mw) * 1000)],
+                x_capacity_kwh=[float(storage_info.energy_capacity_mwh * 1000)],
+                x_bess_power_rating_kw=[float(storage_info.p_max_mw * 1000)],
                 x_operational_status=(
                     "in_service" if storage_info.in_service else "out_of_service"
                 ),

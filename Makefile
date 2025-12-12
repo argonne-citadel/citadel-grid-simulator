@@ -44,7 +44,12 @@ init: environment-dev.yml
 	@echo "$(COLOR_BOLD)Creating development environment...$(COLOR_RESET)"
 	@$(MAMBA_EXE) create -yf environment-dev.yml
 	@$(MAMBA_EXE) install -n $(ENV_NAME)-dev -yf environment.yml
+	@echo "$(COLOR_BOLD)Installing git pre-commit hook...$(COLOR_RESET)"
+	@mkdir -p .git/hooks
+	@cp .git-hooks/pre-commit .git/hooks/pre-commit
+	@chmod +x .git/hooks/pre-commit
 	@echo "$(COLOR_GREEN)Development environment created successfully!$(COLOR_RESET)"
+	@echo "$(COLOR_GREEN)Git pre-commit hook installed - black will run automatically before commits$(COLOR_RESET)"
 
 build: environment.yml
 	@echo "$(COLOR_BOLD)Setting up production environment...$(COLOR_RESET)"

@@ -21,7 +21,7 @@ from stix2 import Bundle
 
 from .annotator import GridSTIXAnnotator
 from .telemetry import TelemetryConverter
-from schemas.state import GridState
+from ..schemas.state import GridState
 
 
 class STIXExporter:
@@ -86,7 +86,7 @@ class STIXExporter:
         self,
         states: List[GridState],
         max_telemetry: int = 1000,
-        time_filter: Optional[float] = None,
+        time_filter: Optional[datetime] = None,
     ) -> Bundle:
         """
         Export an incremental STIX bundle with only new telemetry.

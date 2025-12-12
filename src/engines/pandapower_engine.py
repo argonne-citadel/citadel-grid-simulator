@@ -81,7 +81,7 @@ class PandaPowerEngine(PowerSystemEngine):
     def _initialize_grid_stix(self) -> None:
         """Initialize Grid-STIX annotation for the network."""
         try:
-            from grid_stix_integration import GridSTIXAnnotator
+            from ..grid_stix_integration import GridSTIXAnnotator
 
             self._grid_stix_annotator = GridSTIXAnnotator()
 
@@ -113,7 +113,7 @@ class PandaPowerEngine(PowerSystemEngine):
 
         try:
             from pathlib import Path
-            from grid_stix_integration import TelemetryConverter, STIXExporter
+            from ..grid_stix_integration import TelemetryConverter, STIXExporter
 
             # Create telemetry converter and exporter
             converter = TelemetryConverter(self._grid_stix_annotator)
