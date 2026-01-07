@@ -14,5 +14,5 @@ dependencies:
   - pip=25.3
   - pip:
     - stix2~=3.0.1
-    - grid-stix~=2.6.6
+    - grid-stix~=2.6
     - OpenDSSDirect.py~=0.9.4
