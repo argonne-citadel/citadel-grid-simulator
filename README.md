@@ -1,17 +1,31 @@
 # CITADEL Grid Simulator
 
-A pandapower-based electrical grid simulation system with DERs (Distributed Energy Resources) for cybersecurity and zero-trust policy research. The simulator acts as SCADA substations/RTUs communicating via DNP3 and Modbus protocols.
+A power system simulator with pluggable power-flow engines (pandapower, OpenDSS)
+and DER (Distributed Energy Resource) support, for cybersecurity and zero-trust
+policy research. The simulator exposes a live grid model over Modbus TCP as a
+SCADA RTU, plus a web dashboard for real-time visualization.
 
 ## Overview
 
-The CITADEL Grid Simulator provides realistic power grid simulation capabilities for research and testing:
-
-- **Modern Grid Model**: Dickert LV distribution network with DER support
-- **Real-time Simulation**: 1-second timestep power flow calculations
-- **SCADA Protocols**: DNP3 outstation and Modbus server interfaces
-- **Time-Series Data**: Realistic load, solar PV, and wind generation profiles
-- **Zero-Trust Ready**: Control points for policy enforcement on breakers, loads, and DERs
-- **Thread-Safe**: Concurrent operation with command queue and state callbacks
+- **Multiple grid models**: IEEE 33-bus radial feeder (default), a legacy Dickert
+  LV distribution model, an IEEE 8500-node and IEEE 123-bus feeder (via OpenDSS,
+  based on the Siemens PowerGym benchmarks), and an external CyDERMS composite
+  model.
+- **Two power-flow engines**: pandapower (steady-state, in-process) and OpenDSS
+  (via `opendssdirect`, also in-process), unified behind a common engine
+  interface.
+- **Real-time simulation**: configurable timestep (default 1 s; safe for all
+  bundled models, including the ~4900-bus IEEE 8500 feeder, which takes ~0.5 s
+  per step).
+- **SCADA protocol**: Modbus TCP server with a dynamically sized register map
+  driven by the loaded model's topology. (DNP3 is present in name only — see
+  [SCADA Protocols](#scada-protocols).)
+- **Web dashboard**: live topology/state visualization plus an HMI-style control
+  panel (some control-panel actions are stubbed — see
+  [Web Dashboard and Control Panel](#web-dashboard-and-control-panel)).
+- **Thread-safe**: a shared engine lock serializes the simulation loop against
+  concurrent Modbus writes; writes that can't acquire the lock in time return a
+  Modbus `DEVICE_BUSY` exception rather than blocking indefinitely.
 
 ## Installation
 
@@ -25,58 +39,82 @@ conda env create -f environment.yml
 conda activate grid-simulator
 ```
 
+For development (linting, type-checking, tests), use `environment-dev.yml`
+instead (`make init`).
+
 ## Configuration
 
-```bash
-# Copy example config
-cp src/settingslocal.py.example src/settingslocal.py
+Runtime behavior is controlled almost entirely by CLI flags (see
+[Running the Simulator](#running-the-simulator)); the only setting read from an
+environment variable is the simulation timestep:
 
-# Edit configuration as needed
-nano src/settingslocal.py
+```bash
+TIMESTEP_SECONDS=1.0   # seconds per simulation step; see src/settings.py
 ```
+
+For local overrides beyond that, copy the example settings file:
+
+```bash
+cp src/settingslocal.py.example src/settingslocal.py
+```
+
+`src/settings.py` imports `settingslocal.py` if present, so anything defined
+there overrides the module-level defaults.
 
 ## Running the Simulator
 
+`--model` is required — there is no default that applies automatically; the
+process raises at startup if it isn't set.
+
 ```bash
-# Using Makefile
+# PandaPower model, SCADA mode (Modbus + web dashboard)
+citadel-simulator --mode scada --model baran-wu-33
+
+# OpenDSS model (engine is inferred from the .dss extension)
+citadel-simulator --mode scada --model /usr/app/examples/IEEE37Bus_PV.dss
+
+# Or via Makefile / directly from source
 make run
-
-# Or directly
-cd src && python -m main
-
-# Or using the installed command
-citadel-simulator
+cd src && python -m main --mode scada --model baran-wu-33
 ```
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--mode` | `standalone` | `standalone` runs the simulation loop only; `scada` also starts Modbus, the web dashboard, and (if not disabled) the DNP3 stub. |
+| `--engine` | inferred from `--model` | `pandapower` or `opendss`; a `.dss` suffix on `--model` selects `opendss`, anything else selects `pandapower`. |
+| `--model` | *(required)* | PandaPower: a model name (`baran-wu-33`, `cyderms-composite`). OpenDSS: a path to a `.dss` file. |
+| `--modbus-port` | `502` | |
+| `--dnp3-port` | `20000` | Accepted for compatibility; DNP3 doesn't currently start regardless (see below). |
+| `--no-dnp3` / `--no-modbus` | off | Disable the respective protocol server. |
+| `--duration` | run indefinitely | Simulation duration in seconds. |
+| `--enable-grid-stix` / `--export-stix <path>` | off | Grid-STIX telemetry annotation/export. |
+
+The shipped Docker image runs `--mode scada --no-dnp3 --enable-grid-stix`, with
+`--model` set from the `GRID_MODEL` environment/compose variable.
 
 ## Grid Models
 
-The simulator provides an extensible framework for power grid modeling. The default implementation uses the Dickert LV distribution network model, but the architecture supports custom grid models.
+The simulator is model-agnostic at the engine level (see
+[Engines](#engines)); each model supplies a network topology plus DER/storage
+placement.
 
-### Default Model: Dickert LV Network
+### Baran-Wu 33-Bus (default)
 
-The included Dickert LV model is specifically designed for DER research and serves as a reference implementation:
+IEEE 33-bus radial MV feeder (12.66 kV, `pandapower.networks.case33bw()`) with
+6 DERs (4 PV + 2 wind, ~30% penetration against ~3.7 MW load) and 2 battery
+storage units. This replaced Dickert LV as the default because the Dickert
+network produced voltage violations under North American limits and
+non-physical fallback behavior after breaker trips (see
+`src/models/baran_wu_33.py`).
 
-- **DER-focused**: Designed for distribution-level DER integration studies
-- **Modern architecture**: Reflects current grids with high DER penetration
-- **Zero-trust suitable**: Smaller scale ideal for cyber/control experimentation
-- **Realistic topology**: Includes residential/commercial loads, solar PV, storage
-- **Manageable scale**: Rapid iteration for policy enforcement scenarios
+> Baran, M. E., & Wu, F. F. (1989). Network reconfiguration in distribution
+> systems for loss reduction and load balancing. *IEEE Transactions on Power
+> Delivery*, 4(2), 1401-1407.
 
-**Network Classes**:
-- **Class 1**: Smallest network (default)
-- **Class 2-5**: Increasing size and complexity
+### Dickert LV Network (secondary)
 
-### Custom Grid Models
-
-The simulator architecture is designed to be model-agnostic. You can implement custom grid models by:
-
-1. Creating a new model class in `src/models/`
-2. Implementing the required pandapower network structure
-3. Registering the model in the configuration
-
-See `src/models/dickert_lv.py` for a reference implementation.
-
-### Reference
+Still available (`src/models/dickert_lv.py`) and used by some tests and
+examples, but no longer the default:
 
 ```
 @inproceedings{dickert2013,
@@ -88,214 +126,220 @@ See `src/models/dickert_lv.py` for a reference implementation.
 }
 ```
 
+### IEEE 8500-Node and IEEE 123-Bus (OpenDSS)
+
+Full feeder models from the Siemens PowerGym benchmark suite, fetched at
+Docker build time, with a rooftop-PV overlay layered on top:
+
+- **IEEE 8500**: ~4900 buses, 12.47 kV, ~11 MW peak, 15 PV clusters (~30%
+  penetration).
+- **IEEE 123**: ~120 buses, 4.16 kV, ~3.5 MW peak, 15 PV sites (~32%
+  penetration), zoned for authorization-policy experimentation.
+
+Run via `--model examples/Run_IEEE8500_ZTCARD.dss` or
+`--model examples/Run_IEEE123_ZTCARD.dss` (OpenDSS engine, inferred from the
+`.dss` extension). Storage control and transformer-tap control are not
+implemented on the OpenDSS engine.
+
+### CyDERMS Composite
+
+An adapter (`src/models/cyderms_composite.py`) around an external `cyderms`
+package (not bundled in this repository) that adds reactor-generator support.
+Requires the `cyderms` package to be available on the Python path.
+
+## Engines
+
+`PowerSystemEngine` (`src/engines/base.py`) is the common interface both
+engines implement: topology/state queries, control operations (breaker,
+generator, load, storage, transformer tap), `reset()`, and a command dispatcher.
+
+- **`PandaPowerEngine`**: full read/control support, plus DER output modulation
+  via a diurnal-profile-with-noise model (`src/engines/der_profiles.py`) that's
+  applied before each power flow, Grid-STIX export, and reactor-generator
+  support for CyDERMS models.
+- **`OpenDSSEngine`**: runs OpenDSS in-process via `opendssdirect`. PV output
+  comes from the loadshape baked into the `.dss` file rather than the
+  pandapower-side DER profile model. Storage control and transformer-tap
+  control raise `NotImplementedError`.
+
 ## SCADA Protocols
+
+### Modbus TCP
+
+Default port `502`. The register map is generated per-model from the loaded
+topology (ranges below scale with the model's bus/line/generator/load counts,
+they aren't fixed at exactly 1000 registers each):
+
+| Range | Contents |
+|---|---|
+| Holding Registers 0-999 | Bus voltages (pu × 1000, read-only) |
+| Holding Registers 1000-1999 | Line active power flow (MW × 100, read-only) |
+| Holding Registers 2000-2999 | Line reactive power flow (MVAR × 100, read-only) |
+| Holding Registers 3000-3999 | Line loading (% × 10, read-only) |
+| Holding Registers 4000-4999 | DER active power (MW × 100, read-only) |
+| Holding Registers 5000-5999 | Load active power (MW × 100, read-only) |
+| Coils 0-999 | Breaker status (closed = 1, read-only) |
+| Coils 1000-1999 | Breaker control (write) |
+| Holding Registers 10000-10999 | DER setpoint (write, integer kW) |
+| Holding Registers 11000-11999 | Load demand adjustment (write, integer kW) |
+| Holding Registers 12000-12999 | Bus voltage setpoint via reactive injection (write, integer mvar × 10; requires an engine that supports it — OpenDSS doesn't) |
+
+Writes acquire a shared lock against the simulation loop. If the lock isn't
+available within the engine-lock timeout (defaults to the simulation
+timestep), the server returns Modbus exception code `DEVICE_BUSY` (0x06)
+instead of blocking — this keeps writes from stalling behind a running power
+flow, and keeps two threads from touching the (thread-unsafe) OpenDSS engine
+at once.
 
 ### DNP3 Outstation
 
-**Port**: 20000 (configurable)
+**Not implemented.** `GridDNP3Outstation` raises `NotImplementedError` on
+construction — the Python DNP3 libraries this depended on are no longer
+compatible with the rest of the stack. `--dnp3-port` is still accepted as a
+CLI flag for compatibility, but nothing listens on it. The shipped Docker
+image always runs with `--no-dnp3`. Use Modbus TCP instead.
 
-**Point Mapping**:
-- Analog Inputs 0-N: Bus voltages (per unit)
-- Analog Inputs 100+: Line power flows (MW)
-- Analog Inputs 200+: DER generation (MW)
-- Binary Inputs 0-N: Breaker status (open/closed)
-- Binary Outputs 0-N: Breaker controls
+## Web Dashboard and Control Panel
 
-**Features**:
-- Integrity polls
-- Event reporting
-- Control operations
-- Quality flags
-- Timestamps
+Both are routes on the same Flask app (default port `8080`, started in
+`--mode scada`):
 
-### Modbus Server
+| Route | Purpose |
+|---|---|
+| `GET /` | Real-time Plotly network visualization (voltages, line loading, generation/load/storage, polls `/state` every 5s). |
+| `GET /control` | HMI-style control panel — see caveat below. |
+| `GET /state` | Latest grid state as JSON. |
+| `GET /topology` | Static connectivity only, no power-flow results. |
+| `GET /health` | Liveness check. |
+| `GET /metrics` | Prometheus exposition (see [Metrics](#metrics)). |
+| `POST /reset` | Resets the loaded model and restarts the simulation loop. |
 
-**Port**: 502 (configurable)
+**Control panel caveat**: the breaker-control and generator-setpoint actions on
+`/control` are currently stubbed — they log the requested action and return
+success, but do not call through to the engine, so they don't actually change
+grid state. Only the "read measurements" action reflects live simulator
+state. The panel's role selector and authorization-decision readout are also
+not backed by a real authorization check today: the code retains an
+`authorization_wrapper` extension point (and docstrings describing an
+Envoy/OPA/Neo4j design), but no wrapper is constructed or wired up anywhere in
+this repository, so every operation reports `auth_decision="allow"` with zero
+latency.
 
-**Register Mapping**:
-- Holding Registers 0-999: Bus voltages (scaled)
-- Holding Registers 1000-1999: Line flows (scaled)
-- Holding Registers 2000-2999: DER generation (scaled)
-- Coils 0-999: Breaker status
-- Coils 1000-1999: Breaker controls
+## Model Introspection API
 
-**Features**:
-- Function codes: 1, 2, 3, 4, 5, 6, 15, 16
-- Exception handling
-- Multiple client support
+`src/model_introspection.py` is a standalone utility for generating a
+protocol-agnostic point mapping (bus voltages, line flows, breakers,
+generators, loads, storage) from any `PowerSystemEngine`, independent of the
+live Modbus server's own (separately implemented) register map:
 
-## SCADA Commands
+```python
+from model_introspection import generate_point_mapping
 
-The simulator supports the following control commands:
-
-- `OPEN_BREAKER` - Open a line breaker
-- `CLOSE_BREAKER` - Close a line breaker
-- `SET_DER_SETPOINT` - Adjust DER power output
-- `ADJUST_LOAD` - Modify load demand
-- `SET_STORAGE_POWER` - Control energy storage (charge/discharge)
-
-## Configuration
-
-### Environment Variables
-
-```bash
-# Simulation
-SIMULATION_TIMESTEP=1.0          # seconds
-NETWORK_CLASS=1                  # Dickert LV network class (1-5)
-NUM_TRANSFORMERS=1               # Number of transformers (1-2)
-
-# DNP3
-DNP3_ENABLED=true
-DNP3_PORT=20000
-DNP3_LOCAL_ADDRESS=1
-DNP3_REMOTE_ADDRESS=10
-
-# Modbus
-MODBUS_ENABLED=true
-MODBUS_PORT=502
-MODBUS_UNIT_ID=1
-
-# Logging
-LOG_LEVEL=INFO
-LOG_FILE=grid_simulator.log
+mapping = generate_point_mapping(engine, protocol="modbus")
+mapping.export_to_yaml("points.yaml")
 ```
 
-### Settings File
+Useful for building authorization policy or tooling against a model's point
+list without hand-maintaining a register table.
 
-See `src/settingslocal.py.example` for all configuration options.
+## Metrics
+
+`GET /metrics` exposes Prometheus metric definitions for authorization
+decision latency/counts (`src/metrics.py`) — but nothing in the current
+codebase calls into these recorders, so today the endpoint exposes metric
+*names* with no observations. This is retained instrumentation for a future
+authorization integration, not live telemetry.
 
 ## Time-Series Data Generation
 
-The simulator includes comprehensive time-series generators for realistic load and generation profiles.
-
-### Load Profiles
-
-**Residential**:
-- Morning peak: 6-9 AM
-- Evening peak: 5-10 PM
-- Overnight minimum: 11 PM - 5 AM
-- Seasonal variations (summer AC, winter heating)
-- Weekday/weekend differences
-- Stochastic noise (15%)
-
-**Commercial**:
-- Office: 8 AM - 6 PM weekdays
-- Retail: 9 AM - 9 PM daily
-- Industrial: 24/7 operation
-- Stochastic noise (10%)
-
-### Solar PV Profiles
-
-- Cosine irradiance curve (sunrise to sunset)
-- Seasonal sun angle variations
-- Cloud effects: clear, partly cloudy, cloudy
-- Inverter efficiency (96% default)
-- Day-to-day variability
-
-### Wind Profiles
-
-- Power curve: cut-in 3 m/s, rated 12 m/s, cut-out 25 m/s
-- AR(1) process for temporal correlation
-- Cubic power relationship
-- Stochastic variations
-
-### Example Usage
+`src/timeseries/` provides standalone load/solar/wind profile generators. They
+are **not** wired into the live simulation loop today — DER/load modulation
+during a running simulation comes from the separate, simpler profile model in
+`src/engines/der_profiles.py`. Use these generators directly for offline
+scenario generation or to build a pandapower-format profile of your own:
 
 ```python
 from timeseries import LoadProfileGenerator, SolarProfileGenerator
 
-# Generate load profiles
 load_gen = LoadProfileGenerator(random_seed=42)
 loads = load_gen.generate_multiple_loads(
     num_residential=5,
     num_commercial=2,
     num_days=7,
-    season='summer'
+    season="summer",
 )
 
-# Generate solar profiles
 solar_gen = SolarProfileGenerator(random_seed=42)
 solar = solar_gen.generate_with_variability(
     num_days=7,
     rated_capacity_kw=10.0,
-    season='summer'
+    season="summer",
 )
 
-# Convert to pandapower format
 load_pp = load_gen.to_pandapower_format(loads, load_indices)
 solar_pp = solar_gen.to_pandapower_format(solar, sgen_indices)
 ```
 
+- **Load**: residential (morning/evening peaks, seasonal, weekday/weekend) and
+  commercial (office/retail/industrial) profiles with stochastic noise.
+- **Solar**: cosine irradiance curve, seasonal sunrise/sunset, cloud effects,
+  inverter efficiency.
+- **Wind**: AR(1)-correlated wind speed through a cut-in/rated/cut-out power
+  curve.
+
 ## Development
 
-### Makefile Commands
-
 ```bash
-make help      # Show available commands
-make install   # Create conda environment
-make test      # Run tests
-make run       # Run simulator
-make clean     # Remove generated files
-make lint      # Run linting
-make format    # Format code
+make help        # Show available commands
+make init        # Create the dev conda environment
+make format      # Format code (ruff format)
+make lint        # Check formatting (ruff format --check)
+make type-check  # mypy
+make security    # bandit + pip-audit
+make test        # Run the test suite
+make cistage     # format + type-check + security + test
+make pipbuild    # Build sdist/wheel for distribution
+make run         # Run the simulator
+make clean       # Remove generated files and conda environments
 ```
 
 ### Testing
 
 ```bash
-# Run all tests
 make test
-
-# Run specific test file
-python -m pytest src/tests/test_basic.py -v
-
-# Run with coverage
-python -m pytest --cov=src src/tests/
+# or directly
+pytest tests/ -v
+pytest tests/ --cov=citadel_simulator
 ```
 
 ### SCADA Client Testing
 
 ```bash
-# Test with Modbus client
+# Test with a Modbus client
 mbpoll -a 1 -r 0 -c 10 localhost
-
-# Test with DNP3 client
-# (Use dnp3demo or similar DNP3 master tool)
 ```
-
-## Performance
-
-- **Timestep**: 1 second (configurable)
-- **State history**: 3600 steps (1 hour at 1s timestep)
-- **Protocol updates**: On every timestep
-- **Typical CPU**: <5% for Class 1 network
-- **Memory**: ~100MB for Class 1 network
 
 ## Troubleshooting
 
-### Common Issues
+**Power flow doesn't converge**: check load/generation balance, network
+connectivity, and voltage limits.
 
-**Power flow doesn't converge**:
-- Check load/generation balance
-- Verify network connectivity
-- Review voltage limits
+**Modbus connection fails**: check the port isn't already in use (port 502
+may need elevated privileges), and that the unit ID/register addresses match
+the table above.
 
-**DNP3 connection fails**:
-- Check port 20000 is not in use
-- Verify firewall settings
-- Check DNP3 addresses match
+**Modbus writes return `DEVICE_BUSY`**: the engine lock couldn't be acquired
+within the timeout — normal under sustained write load or a slow-converging
+power flow (e.g. IEEE 8500); the client should retry.
 
-**Modbus connection fails**:
-- Check port 502 is not in use (may need sudo)
-- Verify unit ID matches
-- Check register addresses
+**DNP3 doesn't start**: expected — DNP3 is not implemented (see
+[SCADA Protocols](#scada-protocols)). Use Modbus.
 
 ### Debug Mode
 
 ```bash
-# Enable debug logging
 export LOG_LEVEL=DEBUG
-python -m src.main
+python -m src.main --mode scada --model baran-wu-33
 ```
 
 ## License
@@ -305,7 +349,7 @@ See LICENSE file for details.
 ## References
 
 - [Pandapower Documentation](https://pandapower.readthedocs.io/)
-- [DNP3 Protocol](https://www.dnp.org/)
+- [OpenDSS](https://opendss.epri.com/)
 - [Modbus Protocol](https://modbus.org/)
 - [Grid-STIX Ontology](https://github.com/argonne-citadel/grid-stix)
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "citadel-simulator"
-version = "1.0.6"
+version = "1.1.1"
 description = "CITADEL Critical Infrastructure Simulator"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -57,8 +57,8 @@ dev = [
 citadel-simulator = "citadel_simulator.main:main"
 
 [project.urls]
-Homepage = "https://github.com/argonne-citadel/citadel-simulator"
-Repository = "https://github.com/argonne-citadel/citadel-simulator.git"
+Homepage = "https://github.com/argonne-citadel/citadel-grid-simulator"
+Repository = "https://github.com/argonne-citadel/citadel-grid-simulator.git"
 
 [tool.setuptools]
 packages = ["citadel_simulator"]

@@ -92,7 +92,7 @@ cistage: format type-check security test
 
 pipbuild:
 	@echo "$(COLOR_BOLD)Building distributable packages...$(COLOR_RESET)"
-	@rm -rf build/ dist/ python/citadel-simulator.egg-info/
+	@rm -rf build/ dist/ citadel_simulator.egg-info/
 	@${MICROMAMBA_DEV} python -m build --wheel --sdist
 	@echo "$(COLOR_GREEN)Build complete!$(COLOR_RESET)"
 

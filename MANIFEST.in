@@ -4,7 +4,6 @@ global-exclude *
 # Include build files
 include pyproject.toml
 include LICENSE
-include NOTICE
 include README.md
 
 # Include only the Python package
