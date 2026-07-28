@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "citadel-simulator"
-version = "1.1.1"
+version = "1.1.2"
 description = "CITADEL Critical Infrastructure Simulator"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -29,16 +29,22 @@ classifiers = [
 ]
 
 dependencies = [
-    "stix2~=3.0.1",
-    "grid-stix~=2.6",
+    # Exact-pinned: stix2 3.0.2 changed a property-clean signature
+    # (FloatProperty.clean called with 4 positional args via ListProperty)
+    # that breaks grid-stix 2.6.7's auto-generated assets such as
+    # Substation with ListProperty(FloatProperty()) fields. Loosen back to
+    # ~=3.0.1 once grid-stix publishes a 3.0.2-compatible release.
+    "stix2==3.0.1",
+    "grid-stix~=2.7",
     "flask~=3.1.0",
     "pandapower~=3.2.0",
-    "prometheus-client~=0.21.0",
+    "prometheus-client~=0.23.1",
     "pydantic~=2.12.0",
-    "pymodbus~=3.11.0",
+    "pymodbus~=3.12.0",
     "python-dotenv~=1.2.0",
     "structlog~=25.5.0",
-    "numba~=0.62.0"
+    "numba~=0.64.0",
+    "OpenDSSDirect.py~=0.9.4"
 ]
 
 [project.optional-dependencies]

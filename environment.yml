@@ -19,6 +19,6 @@ dependencies:
     # Substation with ListProperty(FloatProperty()) fields. Loosen back to
     # ~=3.0.1 once grid-stix publishes a 3.0.2-compatible release.
     - stix2==3.0.1
-    - grid-stix~=2.6
+    - grid-stix~=2.7
     - prometheus-client~=0.23.1
     - OpenDSSDirect.py~=0.9.4
