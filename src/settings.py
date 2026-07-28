@@ -4,8 +4,12 @@ This module provides centralized configuration management with support for
 local overrides via settingslocal.py.
 """
 
+import os
+
 # Simulation Settings
-TIMESTEP_SECONDS = 0.1  # 100ms timestep for real-time simulation
+# Default 1.0s is safe for all models (IEEE 8500 step takes ~0.5s).
+# Override via TIMESTEP_SECONDS env var for faster simulation on small models.
+TIMESTEP_SECONDS = float(os.environ.get("TIMESTEP_SECONDS", "1.0"))
 
 # Network Settings
 DEFAULT_NETWORK_CLASS = 1

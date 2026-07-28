@@ -22,9 +22,17 @@ from schemas.results import PowerFlowConfig
 def main():
     """Demonstrate OpenDSS engine usage."""
 
-    # Configuration
-    opendss_service_url = "http://localhost:8000"
-    dss_file_path = "/home/ubuntu/IEEE37Bus_PV.dss"
+    # Configuration. Override via env vars; the defaults expect the example
+    # to be invoked from inside the grid-simulator container where the
+    # bundled IEEE37 DSS file ships at /usr/app/examples/.
+    import os
+
+    opendss_service_url = os.environ.get(
+        "OPENDSS_SERVICE_URL", "http://localhost:8000"
+    )
+    dss_file_path = os.environ.get(
+        "DSS_FILE_PATH", "/usr/app/examples/IEEE37Bus_PV.dss"
+    )
 
     print("=" * 70)
     print("OpenDSS Engine RPC Example")

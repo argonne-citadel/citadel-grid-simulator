@@ -1,10 +1,11 @@
 """Load profile generation for residential and commercial loads."""
 
+import logging
+from datetime import datetime, timedelta
+from typing import Literal, Optional
+
 import numpy as np
 import pandas as pd
-from typing import Optional, Literal
-from datetime import datetime, timedelta
-import logging
 
 logger = logging.getLogger(__name__)
 

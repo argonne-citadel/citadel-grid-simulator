@@ -5,7 +5,7 @@ This module defines data models for the current state of the grid simulation.
 """
 
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -15,12 +15,11 @@ from .common import (
     GeneratorID,
     LineID,
     LoadID,
-    PowerMW,
     PowerMVAr,
+    PowerMW,
     StorageID,
     VoltagePU,
 )
-
 
 # ============================================================================
 # Bus State
@@ -148,6 +147,29 @@ class GridState(BaseModel):
     # System-level metrics
     total_generation_mw: float = Field(description="Total active power generation")
     total_load_mw: float = Field(description="Total active power load")
+    ext_grid_import_mw: float = Field(
+        default=0.0,
+        description="Ext grid power (positive = importing, negative = exporting)",
+    )
     total_losses_mw: float = Field(
         description="Total system losses (can be negative in some edge cases)"
+    )
+
+    # Data quality
+    nan_bus_count: int = Field(
+        default=0,
+        description=(
+            "Number of bus results where NaN/inf was substituted with a default. "
+            "Non-zero indicates partial non-convergence: power flow ran but some "
+            "buses have invalid results. Distinct from converged=False (global failure)."
+        ),
+    )
+    islanded_buses: List[int] = Field(
+        default_factory=list,
+        description=(
+            "Bus IDs where vm_pu was NaN/inf, indicating disconnection from the "
+            "reference bus (islanding).  Populated after NR completes when one or "
+            "more breakers isolate buses.  Subset of nan_bus_count — only vm_pu NaNs "
+            "are included here; line/generator NaNs are counted in nan_bus_count only."
+        ),
     )

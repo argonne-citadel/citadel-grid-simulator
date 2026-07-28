@@ -1,14 +1,16 @@
 FROM ubuntu:24.04
 
-# Install Python and dependencies
+# Install Python and dependencies (including iproute2 for tc/netem network simulation)
 USER root
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     python3-venv \
     curl \
+    git \
     libzmq5-dev \
     libczmq-dev \
+    iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install OpenDSS binaries from SourceForge
@@ -20,19 +22,42 @@ RUN curl -LO https://sourceforge.net/projects/electricdss/files/OpenDSSCmd/opend
 
 ENV PATH="/usr/local/bin:${PATH}"
 
+# Fetch IEEE 8500-Node + IEEE 123 test feeders from Siemens PowerGym via
+# sparse clone. Only the needed system directories are checked out (~3 MB
+# vs ~200 MB full clone). --depth=1 fetches HEAD; the ARG documents the
+# validated commit hash. Override POWERGYM_COMMIT at build time if
+# upstream advances.
+#
+# IEEE 123 (B3 / #1140): PowerGym's 123Bus ships with 4 batteries wired
+# in IEEE123Master.dss (kW=0 disconnected by default) and standalone
+# Solar/Wind ramp scripts useful as references. Per-zone PV portfolio is
+# authored in our Run_IEEE123_ZTCARD.dss wrapper.
+ARG POWERGYM_COMMIT=c9fc6d8357308a1f2bd2389474b56089c2a6bd78
+RUN git clone --depth 1 --filter=blob:none --sparse \
+      https://github.com/siemens/powergym.git /tmp/powergym && \
+    cd /tmp/powergym && \
+    git sparse-checkout set systems/8500-Node systems/123Bus && \
+    mkdir -p /usr/app/examples/ieee8500 /usr/app/examples/ieee123 && \
+    cp -r systems/8500-Node/* /usr/app/examples/ieee8500/ && \
+    cp -r systems/123Bus/* /usr/app/examples/ieee123/ && \
+    rm -rf /tmp/powergym
+
 # Switch to ubuntu user for remaining operations
 USER ubuntu
 WORKDIR /home/ubuntu
 
 # Install micromamba
 ENV MAMBA_ROOT_PREFIX=/home/ubuntu/.conda
-RUN curl -L https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj bin/micromamba \
-    && bin/micromamba shell init -s bash ${MAMBA_ROOT_PREFIX}
+RUN mkdir -p bin && curl -L https://github.com/mamba-org/micromamba-releases/releases/latest/download/micromamba-linux-64 -o bin/micromamba \
+    && chmod +x bin/micromamba \
+    && bin/micromamba shell init -s bash ${MAMBA_ROOT_PREFIX} \
+    && mkdir -p /home/ubuntu/.cache/conda/pkgs/cache/shards
 
 # Copy environment file and create conda environment
 COPY environment.yml /tmp/environment.yml
-RUN --mount=type=cache,target=/home/ubuntu/.conda/pkgs,id=ztcard-grid-simulator-conda-pkgs \
-    --mount=type=cache,target=/home/ubuntu/.cache/pip,id=ztcard-grid-simulator-pip-cache \
+RUN --mount=type=cache,target=/home/ubuntu/.conda/pkgs,id=ztcard-grid-simulator-conda-pkgs,uid=1000,gid=1000 \
+    --mount=type=cache,target=/home/ubuntu/.cache/conda,id=ztcard-grid-simulator-conda-shard-cache,uid=1000,gid=1000 \
+    --mount=type=cache,target=/home/ubuntu/.cache/pip,id=ztcard-grid-simulator-pip-cache,uid=1000,gid=1000 \
     bin/micromamba create -f /tmp/environment.yml \
     && bin/micromamba clean --all --yes
 
@@ -50,9 +75,13 @@ EXPOSE 20000
 # Modbus server
 EXPOSE 502
 
-# Default environment variables for grid simulator configuration
-ENV GRID_ENGINE=pandapower
-ENV GRID_MODEL=dickert-lv
+# Entrypoint fixes /shared volume permissions (Docker named volumes mount as
+# root by default) then drops to ubuntu via runuser before exec-ing CMD.
+COPY --chmod=755 entrypoint.sh /entrypoint.sh
+USER root
+ENTRYPOINT ["/entrypoint.sh"]
 
-# Run Grid Simulator directly from source with Grid-STIX export enabled
-CMD ["/bin/bash", "-c", "/home/ubuntu/bin/micromamba run -n grid-simulator python -m src.main --mode scada --engine ${GRID_ENGINE} --model ${GRID_MODEL} --no-dnp3 --enable-grid-stix"]
+# GRID_MODEL must be set via .env or docker compose environment — no default.
+# Engine is inferred from the value: *.dss → opendss, named string → pandapower.
+# Run Grid Simulator. Engine is inferred from GRID_MODEL; no separate GRID_ENGINE var needed.
+CMD ["/bin/bash", "-c", "/home/ubuntu/bin/micromamba run -n grid-simulator python -m src.main --mode scada --model ${GRID_MODEL} --no-dnp3 --enable-grid-stix"]

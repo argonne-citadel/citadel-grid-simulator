@@ -1,0 +1,143 @@
+Clear
+! IEEE 8500-Node Test Feeder — ZT-CARD wrapper
+!
+! Loads the Siemens PowerGym 8500-Node model (fetched via Dockerfile sparse
+! clone) and adds a rooftop PV portfolio for ZT-CARD multi-zone experiments.
+!
+! The 8500-Node feeder is a ~11 MW peak load, 12.47 kV distribution circuit
+! with ~4900 buses, ~3700 line segments, ~1200 service transformers, 3 voltage
+! regulators, and 4 capacitor banks.  BFS zone partitioning with NUM_RTU_ZONES=5
+! creates 5 control zones for the authorization experiment.
+!
+! DER portfolio: 15 rooftop PV clusters (3 per zone × 5 zones), ~3.25 MW total
+! (~30% penetration on 11 MW peak). Each "PV system" represents an aggregation
+! of 10-30 residential rooftop installations on a single service lateral.
+! All host buses are verified single-phase primary nodes (nodes=[1], 7.2 kV).
+!
+! Usage: GRID_MODEL=/usr/app/examples/Run_IEEE8500_ZTCARD.dss
+
+! Load the base IEEE 8500 model (all component files are in ieee8500/ subdir)
+Redirect ieee8500/Master.dss
+
+! ============================================================================
+! PV/Temperature curves (shared by all PV systems, same as IEEE37Bus_PV.dss)
+! ============================================================================
+New XYCurve.MyPvsT npts=4 xarray=[0 25 75 100] yarray=[1.2 1.0 0.8 0.6]
+New XYCurve.MyEff npts=4 xarray=[.1 .2 .4 1.0] yarray=[.86 .9 .93 .97]
+New Loadshape.MyIrrad npts=24 interval=1 mult=[0 0 0 0 0 0 0.1 .2 .3 .5 .8 .9 1.0 1.0 .99 .9 .7 .4 .1 0 0 0 0 0]
+New Tshape.MyTemp npts=24 interval=1 temp=[25 25 25 25 25 25 25 25 35 40 45 50 60 60 55 40 35 30 25 25 25 25 25 25]
+
+! ============================================================================
+! Zone 0 — near substation, east side (BFS depth 26-98)
+!   p827522:  deep lateral, dist=98, ~30 residential rooftops
+!   l3217056: near substation, dist=26, ~25 rooftops
+!   p829797:  deep lateral alternate, dist=97, ~10 rooftops
+! ============================================================================
+New Transformer.pv_up_z0a phases=1 Xhl=5.75
+~ wdg=1 bus=p827522.1 kV=7.2 kVA=350
+~ wdg=2 bus=trafo_pv_z0a kV=0.24 kVA=350
+New PVSystem.PV_0A phases=1 bus1=trafo_pv_z0a kV=0.24 kVA=350 irrad=0.98 Pmpp=300 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_z0b phases=1 Xhl=5.75
+~ wdg=1 bus=l3217056.1 kV=7.2 kVA=300
+~ wdg=2 bus=trafo_pv_z0b kV=0.24 kVA=300
+New PVSystem.PV_0B phases=1 bus1=trafo_pv_z0b kV=0.24 kVA=300 irrad=0.98 Pmpp=250 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_z0c phases=1 Xhl=5.75
+~ wdg=1 bus=p829797.1 kV=7.2 kVA=125
+~ wdg=2 bus=trafo_pv_z0c kV=0.24 kVA=125
+New PVSystem.PV_0C phases=1 bus1=trafo_pv_z0c kV=0.24 kVA=125 irrad=0.98 Pmpp=100 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+! ============================================================================
+! Zone 1 — mid-feeder, south side (BFS depth 105-146)
+!   l2766729: deep lateral, dist=146
+!   l2823545: far south, dist=124
+!   l2879054: mid-feeder, dist=105
+! ============================================================================
+New Transformer.pv_up_z1a phases=1 Xhl=5.75
+~ wdg=1 bus=l2766729.1 kV=7.2 kVA=350
+~ wdg=2 bus=trafo_pv_z1a kV=0.24 kVA=350
+New PVSystem.PV_1A phases=1 bus1=trafo_pv_z1a kV=0.24 kVA=350 irrad=0.98 Pmpp=300 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_z1b phases=1 Xhl=5.75
+~ wdg=1 bus=l2823545.1 kV=7.2 kVA=300
+~ wdg=2 bus=trafo_pv_z1b kV=0.24 kVA=300
+New PVSystem.PV_1B phases=1 bus1=trafo_pv_z1b kV=0.24 kVA=300 irrad=0.98 Pmpp=250 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_z1c phases=1 Xhl=5.75
+~ wdg=1 bus=l2879054.1 kV=7.2 kVA=125
+~ wdg=2 bus=trafo_pv_z1c kV=0.24 kVA=125
+New PVSystem.PV_1C phases=1 bus1=trafo_pv_z1c kV=0.24 kVA=125 irrad=0.98 Pmpp=100 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+! ============================================================================
+! Zone 2 — mid-feeder, west-central (BFS depth 165-202)
+!   l3727712: deep lateral, dist=202
+!   l3104135: mid-range, dist=174
+!   l3251854: mid-feeder, dist=165
+! ============================================================================
+New Transformer.pv_up_z2a phases=1 Xhl=5.75
+~ wdg=1 bus=l3727712.1 kV=7.2 kVA=350
+~ wdg=2 bus=trafo_pv_z2a kV=0.24 kVA=350
+New PVSystem.PV_2A phases=1 bus1=trafo_pv_z2a kV=0.24 kVA=350 irrad=0.98 Pmpp=300 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_z2b phases=1 Xhl=5.75
+~ wdg=1 bus=l3104135.1 kV=7.2 kVA=300
+~ wdg=2 bus=trafo_pv_z2b kV=0.24 kVA=300
+New PVSystem.PV_2B phases=1 bus1=trafo_pv_z2b kV=0.24 kVA=300 irrad=0.98 Pmpp=250 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_z2c phases=1 Xhl=5.75
+~ wdg=1 bus=l3251854.1 kV=7.2 kVA=125
+~ wdg=2 bus=trafo_pv_z2c kV=0.24 kVA=125
+New PVSystem.PV_2C phases=1 bus1=trafo_pv_z2c kV=0.24 kVA=125 irrad=0.98 Pmpp=100 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+! ============================================================================
+! Zone 3 — deep feeder, south-west (BFS depth 233-234)
+!   n1138596: deep lateral, dist=234
+!   l3235247: deep lateral alternate, dist=233
+!   l3122822: deep lateral alternate, dist=233
+! ============================================================================
+New Transformer.pv_up_z3a phases=1 Xhl=5.75
+~ wdg=1 bus=n1138596.1 kV=7.2 kVA=350
+~ wdg=2 bus=trafo_pv_z3a kV=0.24 kVA=350
+New PVSystem.PV_3A phases=1 bus1=trafo_pv_z3a kV=0.24 kVA=350 irrad=0.98 Pmpp=300 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_z3b phases=1 Xhl=5.75
+~ wdg=1 bus=l3235247.1 kV=7.2 kVA=300
+~ wdg=2 bus=trafo_pv_z3b kV=0.24 kVA=300
+New PVSystem.PV_3B phases=1 bus1=trafo_pv_z3b kV=0.24 kVA=300 irrad=0.98 Pmpp=250 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_z3c phases=1 Xhl=5.75
+~ wdg=1 bus=l3122822.1 kV=7.2 kVA=125
+~ wdg=2 bus=trafo_pv_z3c kV=0.24 kVA=125
+New PVSystem.PV_3C phases=1 bus1=trafo_pv_z3c kV=0.24 kVA=125 irrad=0.98 Pmpp=100 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+! ============================================================================
+! Zone 4 — feeder tail, north-west (BFS depth 248-274)
+!   m3016088:  deep lateral, dist=274
+!   193-48013: mid-range, dist=257
+!   l3065696:  mid-feeder, dist=248
+! ============================================================================
+New Transformer.pv_up_z4a phases=1 Xhl=5.75
+~ wdg=1 bus=m3016088.1 kV=7.2 kVA=350
+~ wdg=2 bus=trafo_pv_z4a kV=0.24 kVA=350
+New PVSystem.PV_4A phases=1 bus1=trafo_pv_z4a kV=0.24 kVA=350 irrad=0.98 Pmpp=300 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_z4b phases=1 Xhl=5.75
+~ wdg=1 bus=193-48013.1 kV=7.2 kVA=300
+~ wdg=2 bus=trafo_pv_z4b kV=0.24 kVA=300
+New PVSystem.PV_4B phases=1 bus1=trafo_pv_z4b kV=0.24 kVA=300 irrad=0.98 Pmpp=250 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_z4c phases=1 Xhl=5.75
+~ wdg=1 bus=l3065696.1 kV=7.2 kVA=125
+~ wdg=2 bus=trafo_pv_z4c kV=0.24 kVA=125
+New PVSystem.PV_4C phases=1 bus1=trafo_pv_z4c kV=0.24 kVA=125 irrad=0.98 Pmpp=100 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+! ============================================================================
+! Solve configuration
+! ============================================================================
+Set VoltageBases = "115, 12.47, 0.48, 0.24"
+CalcVoltageBases
+Set mode=daily
+Set stepsize=1h
+Set number=1
+Solve

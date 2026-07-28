@@ -5,19 +5,21 @@ This package contains type-safe data models for all simulation data structures.
 """
 
 from .common import (
-    BusType,
-    DeviceStatus,
-    DERType,
-    BusID,
-    LineID,
-    GeneratorID,
-    LoadID,
-    StorageID,
-    VoltagePU,
     AngleDeg,
-    PowerMW,
-    PowerMVAr,
+    BusID,
+    BusType,
+    DERType,
+    DeviceStatus,
     Frequency,
+    GeneratorID,
+    LineID,
+    LoadID,
+    PowerMVAr,
+    PowerMW,
+    ShuntID,
+    StorageID,
+    SwitchID,
+    VoltagePU,
 )
 
 __all__ = [
@@ -30,7 +32,9 @@ __all__ = [
     "LineID",
     "GeneratorID",
     "LoadID",
+    "ShuntID",
     "StorageID",
+    "SwitchID",
     # Constrained types
     "VoltagePU",
     "AngleDeg",

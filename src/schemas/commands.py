@@ -14,13 +14,12 @@ from .common import (
     GeneratorID,
     LineID,
     LoadID,
-    PowerMW,
     PowerMVAr,
+    PowerMW,
     StorageID,
     TransformerID,
     VoltagePU,
 )
-
 
 # ============================================================================
 # Command Type Enum
@@ -151,6 +150,32 @@ class TransformerTapCommand(BaseModel):
 
 
 # ============================================================================
+# Reactor Command (gen table entries for nuclear reactors)
+# ============================================================================
+
+
+class ReactorCommand(BaseModel):
+    """Command to set reactor output via gen table (not sgen).
+
+    Reactors are modeled as gen entries in pandapower (controllable=False,
+    PV bus). This command sets p_mw directly; q_mvar is optional.
+    Issued by the ReactorStateCallback after stepping transient models.
+    """
+
+    command_type: CommandType = Field(
+        default=CommandType.GENERATOR_SETPOINT, description="Command type"
+    )
+    gen_id: int = Field(description="pandapower gen table index")
+    p_mw: PowerMW = Field(description="Active power output in MW")
+    q_mvar: Optional[PowerMVAr] = Field(
+        None, description="Reactive power output in MVAr"
+    )
+    timestamp: datetime = Field(
+        default_factory=datetime.now, description="Command timestamp"
+    )
+
+
+# ============================================================================
 # Union Type for All Commands
 # ============================================================================
 
@@ -159,6 +184,7 @@ Command = Union[
     BreakerCommand,
     GeneratorCommand,
     LoadCommand,
+    ReactorCommand,
     StorageCommand,
     TransformerTapCommand,
 ]

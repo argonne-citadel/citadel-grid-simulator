@@ -9,7 +9,6 @@ from typing import Annotated, NewType
 
 from pydantic import Field
 
-
 # ============================================================================
 # Enums
 # ============================================================================
@@ -52,7 +51,9 @@ BusID = NewType("BusID", int)
 LineID = NewType("LineID", int)
 GeneratorID = NewType("GeneratorID", int)
 LoadID = NewType("LoadID", int)
+ShuntID = NewType("ShuntID", int)
 StorageID = NewType("StorageID", int)
+SwitchID = NewType("SwitchID", int)
 TransformerID = NewType("TransformerID", int)
 
 

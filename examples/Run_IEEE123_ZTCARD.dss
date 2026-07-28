@@ -1,0 +1,142 @@
+Clear
+! IEEE 123-Bus Test Feeder — ZT-CARD wrapper (B3 / ztcard-stack #1140)
+!
+! Loads the Siemens PowerGym 123Bus model (fetched via Dockerfile sparse
+! clone) and adds a rooftop PV portfolio for ZT-CARD multi-zone
+! experiments. Parallel to Run_IEEE8500_ZTCARD.dss in structure.
+!
+! The IEEE 123-bus feeder is a ~3.5 MW peak load, 4.16 kV distribution
+! circuit with ~120 buses, 7 voltage regulators, 4 shunt capacitors,
+! and (from PowerGym) 4 disconnected batteries at buses 33/67/114/300.
+! BFS zone partitioning with NUM_RTU_ZONES=5 creates 5 control zones
+! for the authorization experiment.
+!
+! DER portfolio: 15 rooftop PV sites (~75 kW each, 1.125 MW total ≈
+! 32% penetration on 3.5 MW peak). Sites are spread across the feeder
+! by BFS depth so the data-init zone partitioner distributes them
+! across the 5 zones. Buses 33/67/114/300 are intentionally skipped
+! (PowerGym's batteries already live there). Each PV is mounted via a
+! 100 kVA step-up transformer from 240 V secondary to the 2.4 kV
+! line-to-neutral primary on this 4.16 kV system.
+!
+! PowerGym's standalone SolarRamp.DSS / WindRamp.DSS scripts are NOT
+! pulled in — they're OPF-training fixtures (single 2 MW generator
+! with a ramped loadshape) and don't fit the zone-distributed auth
+! experiment shape.
+!
+! Usage: GRID_MODEL=/usr/app/examples/Run_IEEE123_ZTCARD.dss
+
+! Load the base IEEE 123 model. `Compile` (vs `Redirect`) makes the
+! ieee123/ subdir the working directory so the Master's relative
+! Redirects (IEEELineCodes.DSS, IEEE123Loads.dss, IEEE123Regulators.DSS)
+! resolve correctly.
+Compile (ieee123/IEEE123Master.dss)
+
+! ============================================================================
+! PV/Temperature curves (shared by all PV systems, same as the IEEE 8500 +
+! IEEE 37 PV wrappers — single source-of-shape for the experiment matrix)
+! ============================================================================
+New XYCurve.MyPvsT npts=4 xarray=[0 25 75 100] yarray=[1.2 1.0 0.8 0.6]
+New XYCurve.MyEff npts=4 xarray=[.1 .2 .4 1.0] yarray=[.86 .9 .93 .97]
+New Loadshape.MyIrrad npts=24 interval=1 mult=[0 0 0 0 0 0 0.1 .2 .3 .5 .8 .9 1.0 1.0 .99 .9 .7 .4 .1 0 0 0 0 0]
+New Tshape.MyTemp npts=24 interval=1 temp=[25 25 25 25 25 25 25 25 35 40 45 50 60 60 55 40 35 30 25 25 25 25 25 25]
+
+! ============================================================================
+! PV portfolio — 15 sites × 75 kW = 1.125 MW total. Spread across phases
+! and across the feeder by BFS depth from source bus 150. The data-init
+! zone partitioner (BFS) will bucket these into the 5 control zones.
+!
+! Bus selection avoids 33/67/114/300 (PowerGym batteries). Each PV is on
+! an existing single-phase primary bus; phase suffix matches the primary
+! definition in IEEE123Loads.dss.
+! ============================================================================
+
+! ── Phase 1 sites (5) ──────────────────────────────────────────────────────
+New Transformer.pv_up_9   phases=1 Xhl=5.75
+~ wdg=1 bus=9.1   kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_9   kV=0.24 kVA=100
+New PVSystem.PV_9   phases=1 bus1=trafo_pv_9   kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_14  phases=1 Xhl=5.75
+~ wdg=1 bus=14.1  kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_14  kV=0.24 kVA=100
+New PVSystem.PV_14  phases=1 bus1=trafo_pv_14  kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_19  phases=1 Xhl=5.75
+~ wdg=1 bus=19.1  kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_19  kV=0.24 kVA=100
+New PVSystem.PV_19  phases=1 bus1=trafo_pv_19  kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_70  phases=1 Xhl=5.75
+~ wdg=1 bus=70.1  kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_70  kV=0.24 kVA=100
+New PVSystem.PV_70  phases=1 bus1=trafo_pv_70  kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_113 phases=1 Xhl=5.75
+~ wdg=1 bus=113.1 kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_113 kV=0.24 kVA=100
+New PVSystem.PV_113 phases=1 bus1=trafo_pv_113 kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+! ── Phase 2 sites (5) ──────────────────────────────────────────────────────
+New Transformer.pv_up_12  phases=1 Xhl=5.75
+~ wdg=1 bus=12.2  kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_12  kV=0.24 kVA=100
+New PVSystem.PV_12  phases=1 bus1=trafo_pv_12  kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_22  phases=1 Xhl=5.75
+~ wdg=1 bus=22.2  kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_22  kV=0.24 kVA=100
+New PVSystem.PV_22  phases=1 bus1=trafo_pv_22  kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_39  phases=1 Xhl=5.75
+~ wdg=1 bus=39.2  kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_39  kV=0.24 kVA=100
+New PVSystem.PV_39  phases=1 bus1=trafo_pv_39  kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_59  phases=1 Xhl=5.75
+~ wdg=1 bus=59.2  kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_59  kV=0.24 kVA=100
+New PVSystem.PV_59  phases=1 bus1=trafo_pv_59  kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_106 phases=1 Xhl=5.75
+~ wdg=1 bus=106.2 kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_106 kV=0.24 kVA=100
+New PVSystem.PV_106 phases=1 bus1=trafo_pv_106 kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+! ── Phase 3 sites (5) ──────────────────────────────────────────────────────
+New Transformer.pv_up_4   phases=1 Xhl=5.75
+~ wdg=1 bus=4.3   kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_4    kV=0.24 kVA=100
+New PVSystem.PV_4   phases=1 bus1=trafo_pv_4   kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_17  phases=1 Xhl=5.75
+~ wdg=1 bus=17.3  kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_17  kV=0.24 kVA=100
+New PVSystem.PV_17  phases=1 bus1=trafo_pv_17  kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_32  phases=1 Xhl=5.75
+~ wdg=1 bus=32.3  kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_32  kV=0.24 kVA=100
+New PVSystem.PV_32  phases=1 bus1=trafo_pv_32  kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_75  phases=1 Xhl=5.75
+~ wdg=1 bus=75.3  kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_75  kV=0.24 kVA=100
+New PVSystem.PV_75  phases=1 bus1=trafo_pv_75  kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_92  phases=1 Xhl=5.75
+~ wdg=1 bus=92.3  kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_92  kV=0.24 kVA=100
+New PVSystem.PV_92  phases=1 bus1=trafo_pv_92  kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+! ============================================================================
+! Re-establish voltage bases for the new 0.24 kV step-up transformer
+! secondaries so OpenDSS reports per-unit voltages correctly on the new buses.
+! ============================================================================
+Set VoltageBases = [4.16, 0.48, 0.24]
+CalcVoltageBases
+
+! Solve a snapshot power flow so the PV systems initialize against the
+! current load + regulator state. Mirrors the post-init solve in
+! Run_IEEE8500_ZTCARD.dss.
+Solve

@@ -9,44 +9,33 @@ from typing import Any, Dict, Optional, Tuple
 
 from ..engines.base import PowerSystemEngine
 from ..engines.pandapower_engine import PandaPowerEngine
-from .dickert_lv import DickertLVModel
+from .baran_wu_33 import BaranWu33Model
 
 
-def create_pandapower_dickert_lv(
-    feeders_range: str = "short", linetype: str = "cable", **kwargs
-) -> PandaPowerEngine:
+def create_pandapower_baran_wu_33(**kwargs: Any) -> PandaPowerEngine:
     """
-    Create a PandaPower engine with Dickert LV network.
+    Create a PandaPower engine with Baran-Wu 33-bus network.
 
     Args:
-        feeders_range: Feeder length - 'short', 'middle', or 'long'
-        linetype: Line type - 'cable' or 'C&OHL'
         **kwargs: Additional arguments (currently unused)
 
     Returns:
-        PandaPowerEngine initialized with Dickert LV network.
+        PandaPowerEngine initialized with Baran-Wu 33-bus network.
     """
-    # Create the network model
-    model = DickertLVModel(feeders_range=feeders_range, linetype=linetype)
-
-    # Get the PandaPower network
+    model = BaranWu33Model()
     pp_net = model.get_network()
-
-    # Wrap with engine
-    engine = PandaPowerEngine(pp_net)
-
-    return engine
+    return PandaPowerEngine(pp_net)
 
 
 def create_engine(
-    engine_type: str = "pandapower", model_type: str = "dickert_lv", **kwargs
+    engine_type: str = "pandapower", model_type: str = "baran_wu_33", **kwargs: Any
 ) -> PowerSystemEngine:
     """
     Create a power system engine with specified network model.
 
     Args:
         engine_type: Type of engine ('pandapower', 'opendss', 'pypsa', etc.)
-        model_type: Type of network model ('dickert_lv', 'ieee13', etc.)
+        model_type: Type of network model ('baran_wu_33', etc.)
         **kwargs: Model-specific parameters
 
     Returns:
@@ -56,8 +45,8 @@ def create_engine(
         ValueError: If engine_type or model_type is not supported.
     """
     if engine_type == "pandapower":
-        if model_type == "dickert_lv":
-            return create_pandapower_dickert_lv(**kwargs)
+        if model_type == "baran_wu_33":
+            return create_pandapower_baran_wu_33(**kwargs)
         else:
             raise ValueError(f"Unsupported PandaPower model type: {model_type}")
     else:
@@ -65,14 +54,14 @@ def create_engine(
 
 
 def create_simulation(
-    engine_type: str = "pandapower", model_type: str = "dickert_lv", **kwargs
+    engine_type: str = "pandapower", model_type: str = "baran_wu_33", **kwargs: Any
 ) -> Tuple[PowerSystemEngine, Dict[str, Any]]:
     """
     Create a complete simulation setup with engine and model info.
 
     Args:
         engine_type: Type of engine ('pandapower', 'opendss', 'pypsa', etc.)
-        model_type: Type of network model ('dickert_lv', 'ieee13', etc.)
+        model_type: Type of network model ('baran_wu_33', etc.)
         **kwargs: Model-specific parameters
 
     Returns:
@@ -82,13 +71,9 @@ def create_simulation(
     Raises:
         ValueError: If engine_type or model_type is not supported.
     """
-    # Create the engine
     engine = create_engine(engine_type=engine_type, model_type=model_type, **kwargs)
-
-    # Get topology info
     topology = engine.get_topology()
 
-    # Build model info
     model_info = {
         "engine_type": engine_type,
         "model_type": model_type,
@@ -106,17 +91,18 @@ def create_simulation(
     return engine, model_info
 
 
-# Convenience aliases
-def create_default_simulation(**kwargs) -> Tuple[PowerSystemEngine, Dict[str, Any]]:
+def create_default_simulation(
+    **kwargs: Any,
+) -> Tuple[PowerSystemEngine, Dict[str, Any]]:
     """
-    Create a simulation with default settings (PandaPower + Dickert LV).
+    Create a simulation with default settings (PandaPower + Baran-Wu 33-bus).
 
     Args:
-        **kwargs: Model-specific parameters (feeders_range, linetype, etc.)
+        **kwargs: Model-specific parameters
 
     Returns:
         Tuple of (engine, model_info).
     """
     return create_simulation(
-        engine_type="pandapower", model_type="dickert_lv", **kwargs
+        engine_type="pandapower", model_type="baran_wu_33", **kwargs
     )

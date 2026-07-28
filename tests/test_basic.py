@@ -1,12 +1,10 @@
 """Basic tests for grid simulator."""
 
 import pytest
-import sys
-from pathlib import Path
 
 # Import all critical modules to catch import errors early
 # This ensures that pymodbus 3.x API compatibility issues are caught
-from src.models import DickertLVModel
+from src.models import BaranWu33Model
 from src.simulator import GridSimulator
 from src.engines.pandapower_engine import PandaPowerEngine
 from src.schemas.commands import CommandType, BreakerCommand
@@ -37,9 +35,9 @@ def test_pymodbus_api():
         pass  # Expected - old API not available
 
 
-def test_dickert_lv_model_creation():
-    """Test that Dickert LV model can be created."""
-    model = DickertLVModel(feeders_range="short", linetype="cable")
+def test_baran_wu_33_model_creation():
+    """Test that Baran-Wu 33-bus model can be created."""
+    model = BaranWu33Model()
     assert model is not None
     assert model.net is not None
 
@@ -50,15 +48,15 @@ def test_dickert_lv_model_creation():
     assert topology["num_loads"] > 0
 
 
-def test_dickert_lv_model_validation():
+def test_baran_wu_33_model_validation():
     """Test that model validation works."""
-    model = DickertLVModel(feeders_range="short", linetype="cable")
+    model = BaranWu33Model()
     assert model.validate() is True
 
 
 def test_grid_simulator_creation():
     """Test that grid simulator can be created."""
-    model = DickertLVModel(feeders_range="short", linetype="cable")
+    model = BaranWu33Model()
     engine = PandaPowerEngine(model.get_network())
     simulator = GridSimulator(engine, timestep_seconds=1.0)
 
@@ -69,7 +67,7 @@ def test_grid_simulator_creation():
 
 def test_grid_simulator_single_step():
     """Test that simulator can execute a single step."""
-    model = DickertLVModel(feeders_range="short", linetype="cable")
+    model = BaranWu33Model()
     engine = PandaPowerEngine(model.get_network())
     simulator = GridSimulator(engine, timestep_seconds=1.0)
 
@@ -86,7 +84,7 @@ def test_grid_simulator_single_step():
 
 def test_grid_simulator_command_queue():
     """Test that commands can be queued."""
-    model = DickertLVModel(feeders_range="short", linetype="cable")
+    model = BaranWu33Model()
     engine = PandaPowerEngine(model.get_network())
     simulator = GridSimulator(engine, timestep_seconds=1.0)
 
@@ -100,7 +98,7 @@ def test_grid_simulator_command_queue():
 
 def test_grid_simulator_breaker_control():
     """Test breaker control commands."""
-    model = DickertLVModel(feeders_range="short", linetype="cable")
+    model = BaranWu33Model()
     engine = PandaPowerEngine(model.get_network())
     simulator = GridSimulator(engine, timestep_seconds=1.0)
 
@@ -124,7 +122,7 @@ def test_grid_simulator_breaker_control():
 
 def test_control_points():
     """Test that control points are identified."""
-    model = DickertLVModel(feeders_range="short", linetype="cable")
+    model = BaranWu33Model()
     control_points = model.get_control_points()
 
     assert "breakers" in control_points

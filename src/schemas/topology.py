@@ -17,13 +17,14 @@ from .common import (
     GeneratorID,
     LineID,
     LoadID,
-    PowerMW,
     PowerMVAr,
+    PowerMW,
+    ShuntID,
     StorageID,
+    SwitchID,
     TransformerID,
     VoltagePU,
 )
-
 
 # ============================================================================
 # Bus/Node Information
@@ -209,6 +210,45 @@ class StorageInfo(BaseModel, frozen=True):
 
 
 # ============================================================================
+# Shunt Capacitor / Reactor Information
+# ============================================================================
+
+
+class ShuntInfo(BaseModel, frozen=True):
+    """Information about a shunt capacitor or reactor in the network."""
+
+    shunt_id: ShuntID
+    name: str
+    bus: BusID
+
+    # Electrical parameters (negative q_mvar = capacitive injection)
+    q_mvar: float = Field(description="Reactive power in MVAr (negative = capacitive)")
+    p_mw: float = Field(description="Active power loss in MW")
+
+    # Status
+    in_service: bool = Field(True, description="Shunt is in service")
+
+
+# ============================================================================
+# Switch Information
+# ============================================================================
+
+
+class SwitchInfo(BaseModel, frozen=True):
+    """Information about a switch (circuit breaker, disconnect, etc.)."""
+
+    switch_id: SwitchID
+    name: str
+    bus: BusID  # One side of the switch
+    element: int = Field(description="Other side (bus index for et='b')")
+    element_type: str = Field(description="'b' (bus), 'l' (line), 't' (trafo)")
+    closed: bool = Field(description="True if switch is closed")
+    switch_type: str = Field(
+        description="'CB' (circuit breaker), 'DS' (disconnect), etc."
+    )
+
+
+# ============================================================================
 # Complete Network Topology
 # ============================================================================
 
@@ -227,6 +267,12 @@ class NetworkTopology(BaseModel, frozen=True):
     loads: Dict[LoadID, LoadInfo] = Field(description="All loads in the network")
     storage: Dict[StorageID, StorageInfo] = Field(
         default_factory=dict, description="All storage units in the network"
+    )
+    shunts: Dict[ShuntID, ShuntInfo] = Field(
+        default_factory=dict, description="All shunt capacitors/reactors"
+    )
+    switches: Dict[SwitchID, SwitchInfo] = Field(
+        default_factory=dict, description="All switches (circuit breakers, disconnects)"
     )
 
     # Metadata

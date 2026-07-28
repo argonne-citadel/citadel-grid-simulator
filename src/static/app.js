@@ -2,10 +2,131 @@
 const POLL_INTERVAL = 5000; // 5 seconds
 const RETRY_INTERVAL = 2000; // 2 seconds on error
 
+// Simulation wall-clock epoch: Monday 08:00.  sim_time (seconds) is
+// scaled by SIM_TIME_SCALE and added to this to produce a day-of-week /
+// time-of-day display.
+const SIM_START_EPOCH = new Date(2025, 0, 6, 8, 0, 0); // Mon Jan 6 2025 08:00
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+// Scenario seconds per sim_time second.  60 → each real second advances
+// the scenario clock by 1 minute, so a 30-min session covers ~30 hours
+// of grid operations (just over one full day).
+const SIM_TIME_SCALE = 60;
+
+function simClock(simTimeSeconds) {
+    const scenarioMs = simTimeSeconds * SIM_TIME_SCALE * 1000;
+    const d = new Date(SIM_START_EPOCH.getTime() + scenarioMs);
+    const day = DAY_NAMES[d.getDay()];
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    return `${day} ${hh}:${mm}`;
+}
+
 // State
 let currentVersion = -1;
 let pollTimer = null;
 let retrying = false;
+
+/**
+ * Map line loading % to a display color.
+ *
+ * Thresholds aligned with NERC FAC-008/FAC-009 facility rating practice:
+ *   0 %  → white  (#ffffff): unloaded, visually quiet
+ *  75 %  → green  (#22c55e): NERC N-1 contingency planning limit
+ * 100 %  → yellow (#fbbf24): NormAmps continuous thermal rating
+ * 115 %  → orange (#f97316): EmergAmps short-term emergency rating
+ * 125 %+ → red    (#ef4444): beyond emergency rating, critical
+ *
+ * Open (tripped) lines always display red regardless of loading.
+ */
+function lineLoadColor(loading, isOpen) {
+    if (!isOpen) return '#ef4444';  // Tripped/open line
+
+    // Colour stops: [loading threshold, [R, G, B]]
+    const stops = [
+        [  0, [255, 255, 255]],   // white
+        [ 75, [ 34, 197,  94]],   // green  #22c55e  — NERC N-1 planning limit
+        [100, [251, 191,  36]],   // yellow #fbbf24  — NormAmps thermal limit
+        [115, [249, 115,  22]],   // orange #f97316  — EmergAmps limit
+        [125, [239,  68,  68]],   // red    #ef4444  — beyond emergency rating
+    ];
+
+    // Find which segment loading falls in
+    let lo = stops[0], hi = stops[stops.length - 1];
+    for (let i = 0; i < stops.length - 1; i++) {
+        if (loading <= stops[i + 1][0]) {
+            lo = stops[i];
+            hi = stops[i + 1];
+            break;
+        }
+    }
+
+    const t = lo[0] === hi[0] ? 1 : (loading - lo[0]) / (hi[0] - lo[0]);
+    const r = Math.round(lo[1][0] + (hi[1][0] - lo[1][0]) * t);
+    const g = Math.round(lo[1][1] + (hi[1][1] - lo[1][1]) * t);
+    const b = Math.round(lo[1][2] + (hi[1][2] - lo[1][2]) * t);
+    return `rgba(${r}, ${g}, ${b}, 0.9)`;
+}
+
+// ── Symlog color scale helpers ────────────────────────────────────────────────
+//
+// A pure log scale breaks at zero and can't represent negative values.
+// symlog(x) = sign(x) * log(1 + |x| / T) is linear within ±T kW and
+// log-compressed beyond it, keeping zero at centre and supporting both signs.
+// This makes small loads/generators visually distinct even when a large unit
+// dominates the range.
+//
+const SYMLOG_THRESHOLD = 10;  // kW — linear region ±10 kW, log above
+
+function symlog(x) {
+    return Math.sign(x) * Math.log1p(Math.abs(x) / SYMLOG_THRESHOLD);
+}
+
+/**
+ * Return Plotly tickvals/ticktext for an asymmetric symlog colorbar.
+ * minKw/maxKw are raw kW bounds of the data (not symlog-transformed).
+ * tickvals are in symlog space; ticktext shows original kW values.
+ */
+function symlogTicks(minKw, maxKw) {
+    const candidates = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000];
+    const kwVals = new Set([0]);
+    for (const v of candidates) {
+        if ( v <= maxKw * 1.05) kwVals.add( v);
+        if (-v >= minKw * 1.05) kwVals.add(-v);
+    }
+    const sorted = [...kwVals].sort((a, b) => a - b);
+    return {
+        tickvals: sorted.map(v => symlog(v)),
+        ticktext: sorted.map(v => v === 0 ? '0' : `${v > 0 ? '+' : ''}${v}`)
+    };
+}
+
+/**
+ * Compute Plotly {colorscale, cmin, cmax} for a symlog-transformed power axis.
+ * White is anchored at 0 kW; the colorscale stop is placed at the correct
+ * normalized position so purple→white→green maps correctly even when
+ * cmin ≠ -cmax (asymmetric scale).
+ *
+ *   minKw ≤ 0, maxKw ≥ 0  → full diverging purple–white–green
+ *   minKw = 0              → white–green only (generators, always positive)
+ *   maxKw = 0              → purple–white only (loads, always consuming)
+ */
+function symlogColorscale(minKw, maxKw) {
+    // Guard against zero-range
+    const sMin = symlog(minKw === maxKw ? minKw - 1 : minKw);
+    const sMax = symlog(minKw === maxKw ? maxKw + 1 : maxKw);
+    const whitePos = Math.max(0, Math.min(1, (0 - sMin) / (sMax - sMin)));
+    let colorscale;
+    if (whitePos < 0.001) {
+        colorscale = [[0, '#ffffff'], [1, '#22c55e']];           // all positive
+    } else if (whitePos > 0.999) {
+        colorscale = [[0, '#a855f7'], [1, '#ffffff']];           // all negative
+    } else {
+        colorscale = [[0, '#a855f7'], [whitePos, '#ffffff'], [1, '#22c55e']];
+    }
+    return { colorscale, cmin: sMin, cmax: sMax };
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Initialize Plotly chart
 function initializePlot(data) {
@@ -14,71 +135,95 @@ function initializePlot(data) {
 
     const plotData = [];
 
-    // Line data with loading percentage coloring
+    // Consolidate line segments by NERC loading band — one trace per band
+    // gives per-segment color while keeping total trace count low (~6 bands).
+    // scattergl doesn't support per-segment colors in a single trace.
+    // Three size tiers:
+    //   Huge  (IEEE 8500, 4000+ lines): tiny markers to avoid total overlap
+    //   Large (CyDERMS composite, 100-1500 lines): medium markers, legible
+    //   Small (Baran-Wu 33, <100 lines): full-size markers with labels
+    const isHugeModel = topology.lines.length > 1500;
+    const isLargeModel = topology.lines.length > 100;
+
+    // Build bus ID → name lookup for hover tooltips
+    const busIdToName = {};
+    if (topology.buses && topology.buses.metadata) {
+        topology.buses.metadata.forEach(b => { busIdToName[b.id] = b.name; });
+    }
+
+    const bands = [
+        { max:  75, color: 'rgba(34, 197, 94, 0.7)',  label: '< 75%' },
+        { max: 100, color: 'rgba(251, 191, 36, 0.8)', label: '75-100%' },
+        { max: 115, color: 'rgba(249, 115, 22, 0.9)', label: '100-115%' },
+        { max: 999, color: 'rgba(239, 68, 68, 0.9)',  label: '> 115%' },
+        { max: -1,  color: '#ffffff',                   label: 'Unloaded' },
+    ];
+    const trippedBand = { color: '#ef4444', label: 'Tripped' };
+
+    // Bucket line segments and midpoints by band
+    const bandData = bands.map(() => ({ lx: [], ly: [], mx: [], my: [], text: [], custom: [] }));
+    const trippedData = { lx: [], ly: [], mx: [], my: [], text: [], custom: [] };
+
     topology.lines.forEach((line, idx) => {
         const isOpen = state.line_status[idx];
-        const loading = state.line_loading[idx];
+        const loading = state.line_loading[idx] || 0;
+        const fromName = busIdToName[line.from_bus] || line.from_bus;
+        const toName = busIdToName[line.to_bus] || line.to_bus;
+        const midpoint = [(line.x[0] + line.x[1]) / 2, (line.y[0] + line.y[1]) / 2];
 
-        // Add midpoint for better hover detection and coloring
-        const midX = (line.x[0] + line.x[1]) / 2;
-        const midY = (line.y[0] + line.y[1]) / 2;
-
-        // Calculate color based on loading percentage (green -> yellow -> red)
-        let lineColor;
+        let bucket;
         if (!isOpen) {
-            lineColor = '#ef4444';  // Red for open lines
-        } else if (loading < 50) {
-            // Interpolate between green (#22c55e) and yellow (#fbbf24)
-            const t = loading / 50;
-            lineColor = `rgba(${Math.round(34 + (251-34)*t)}, ${Math.round(197 + (191-197)*t)}, ${Math.round(94 + (36-94)*t)}, 0.8)`;
+            bucket = trippedData;
+        } else if (loading <= 0.01) {
+            bucket = bandData[4]; // Unloaded
         } else {
-            // Interpolate between yellow (#fbbf24) and red (#ef4444)
-            const t = (loading - 50) / 50;
-            lineColor = `rgba(${Math.round(251 + (239-251)*t)}, ${Math.round(191 + (68-191)*t)}, ${Math.round(36 + (68-36)*t)}, 0.8)`;
+            for (let i = 0; i < 4; i++) {
+                if (loading <= bands[i].max) { bucket = bandData[i]; break; }
+            }
+            if (!bucket) bucket = bandData[3];
         }
 
-        // Line visual only - NO hover
-        plotData.push({
-            x: line.x,
-            y: line.y,
-            mode: 'lines',
-            type: 'scattergl',
-            name: `Line ${line.line_id}`,
-            line: {
-                color: lineColor,
-                width: isOpen ? 2 : 1,
-                dash: isOpen ? 'solid' : 'dash'
-            },
-            hoverinfo: 'skip',
-            showlegend: false
-        });
+        bucket.lx.push(line.x[0], line.x[1], null);
+        bucket.ly.push(line.y[0], line.y[1], null);
+        bucket.mx.push(midpoint[0]);
+        bucket.my.push(midpoint[1]);
+        bucket.text.push(`Line ${line.line_id}`);
+        bucket.custom.push([loading.toFixed(1), fromName, toName, isOpen ? 'Closed' : 'Open']);
+    });
 
-        // Separate midpoint marker for hover information
+    // Emit one line trace + one marker trace per band
+    bands.forEach((band, i) => {
+        const bd = bandData[i];
+        if (bd.lx.length === 0) return;
         plotData.push({
-            x: [midX],
-            y: [midY],
-            mode: 'markers',
-            type: 'scattergl',
-            name: `Line ${line.line_id} Hover`,
-            marker: {
-                size: 8,
-                color: lineColor,  // Use same color as the line visual
-                showscale: false,  // Don't show colorbar for midpoint markers
-                line: {
-                    color: '#ffffff',
-                    width: 1
-                }
-            },
-            text: [`Line ${line.line_id}`],
-            customdata: [[loading, line.from_bus, line.to_bus, isOpen]],
-            hovertemplate: '<b>%{text}</b><br>' +
-                          `From Bus %{customdata[1]} → To Bus %{customdata[2]}<br>` +
-                          `Status: ${isOpen ? 'Closed' : 'Open'}<br>` +
-                          `Loading: %{customdata[0]:.1f}%<br>` +
-                          '<extra></extra>',
+            x: bd.lx, y: bd.ly, mode: 'lines', type: 'scattergl',
+            line: { color: band.color, width: 1 },
+            hoverinfo: 'skip', showlegend: false
+        });
+        plotData.push({
+            x: bd.mx, y: bd.my, mode: 'markers', type: 'scatter',
+            name: band.label, marker: { size: isHugeModel ? 3 : isLargeModel ? 5 : 8, color: band.color },
+            text: bd.text, customdata: bd.custom,
+            hovertemplate: '<b>%{text}</b><br>%{customdata[1]} → %{customdata[2]}<br>' +
+                          'Status: %{customdata[3]}<br>Loading: %{customdata[0]}%<extra></extra>',
             showlegend: false
         });
     });
+    if (trippedData.lx.length > 0) {
+        plotData.push({
+            x: trippedData.lx, y: trippedData.ly, mode: 'lines', type: 'scattergl',
+            line: { color: trippedBand.color, width: 2, dash: 'dash' },
+            hoverinfo: 'skip', showlegend: false
+        });
+        plotData.push({
+            x: trippedData.mx, y: trippedData.my, mode: 'markers', type: 'scatter',
+            name: 'Tripped', marker: { size: isHugeModel ? 5 : isLargeModel ? 7 : 10, color: trippedBand.color },
+            text: trippedData.text, customdata: trippedData.custom,
+            hovertemplate: '<b>%{text}</b><br>%{customdata[1]} → %{customdata[2]}<br>' +
+                          'Status: OPEN<br>Loading: %{customdata[0]}%<extra></extra>',
+            showlegend: false
+        });
+    }
 
     // Add invisible trace for line loading colorbar legend
     plotData.push({
@@ -90,133 +235,338 @@ function initializePlot(data) {
         marker: {
             size: 0,
             color: [0],
-            colorscale: [[0, '#22c55e'], [0.5, '#fbbf24'], [1, '#ef4444']],
+            // Colorscale normalized over cmin=0 / cmax=125.
+            // Stops at NERC FAC-008 thresholds: 75%=N-1 limit, 100%=NormAmps, 115%=EmergAmps.
+            colorscale: [
+                [0/125,   '#ffffff'],   // 0 %   white
+                [75/125,  '#22c55e'],   // 75 %  green  — N-1 planning limit
+                [100/125, '#fbbf24'],   // 100 % yellow — NormAmps
+                [115/125, '#f97316'],   // 115 % orange — EmergAmps
+                [125/125, '#ef4444'],   // 125 % red    — beyond emergency
+            ],
             cmin: 0,
-            cmax: 100,
+            cmax: 125,
             showscale: true,
             colorbar: {
                 title: 'Line Loading (%)',
                 thickness: 20,
                 len: 0.7,
                 x: 1.15,
-                y: 0.5
+                y: 0.5,
+                tickvals: [0, 75, 100, 115, 125],
+                ticktext: ['0%', '75%', '100%', '115%', '125%']
             }
         },
         hoverinfo: 'skip',
         showlegend: false
     });
 
-    // Transformer connections (if any)
+    // Transformer connections — split into power transformers vs voltage regulators.
+    // Detection: regulators have hv_kv ≈ lv_kv (same-kV trafos with tap changers).
     if (topology.transformers && topology.transformers.length > 0) {
-        // Collect all transformer midpoints for legend trace
-        const trafoMidX = [];
-        const trafoMidY = [];
-        const trafoText = [];
-        const trafoCustomdata = [];
-        
+        // Separate power transformers from voltage regulators
+        const powerTrafos = [];
+        const regulators = [];
         topology.transformers.forEach(trafo => {
-            // Calculate midpoint for hover marker
-            const midX = (trafo.x[0] + trafo.x[1]) / 2;
-            const midY = (trafo.y[0] + trafo.y[1]) / 2;
-            
-            // Transformer line visual
-            plotData.push({
-                x: trafo.x,
-                y: trafo.y,
-                mode: 'lines',
-                type: 'scattergl',
-                name: `Trafo ${trafo.trafo_id}`,
-                line: {
-                    color: trafo.in_service ? '#fbbf24' : '#ef4444',  // Yellow if in service, red if out
-                    width: 4,
-                    dash: trafo.in_service ? 'solid' : 'dash'
-                },
-                hoverinfo: 'skip',
-                showlegend: false
-            });
-            
-            // Collect midpoint data
-            trafoMidX.push(midX);
-            trafoMidY.push(midY);
-            trafoText.push(trafo.name);
-            trafoCustomdata.push([trafo.hv_bus, trafo.lv_bus, trafo.rated_mva, trafo.hv_kv, trafo.lv_kv, trafo.in_service]);
+            const kvRatio = Math.abs(trafo.hv_kv - trafo.lv_kv) / Math.max(trafo.hv_kv, trafo.lv_kv);
+            if (kvRatio < 0.01 && trafo.tap_position !== null && trafo.tap_position !== undefined) {
+                regulators.push(trafo);
+            } else {
+                powerTrafos.push(trafo);
+            }
         });
-        
-        // Single transformer marker trace for legend
+
+        // Power transformer traces (yellow hexagon — unchanged)
+        if (powerTrafos.length > 0) {
+            const ptLineX = [];
+            const ptLineY = [];
+            const ptMidX = [];
+            const ptMidY = [];
+            const ptText = [];
+            const ptCustom = [];
+
+            powerTrafos.forEach(trafo => {
+                ptLineX.push(trafo.x[0], trafo.x[1], null);
+                ptLineY.push(trafo.y[0], trafo.y[1], null);
+                ptMidX.push((trafo.x[0] + trafo.x[1]) / 2);
+                ptMidY.push((trafo.y[0] + trafo.y[1]) / 2);
+                ptText.push(trafo.name);
+                ptCustom.push([trafo.hv_bus, trafo.lv_bus, trafo.rated_mva, trafo.hv_kv, trafo.lv_kv, trafo.in_service]);
+            });
+
+            plotData.push({
+                x: ptLineX, y: ptLineY,
+                mode: 'lines', type: 'scattergl',
+                line: { color: '#fbbf24', width: isHugeModel ? 1 : isLargeModel ? 2 : 4 },
+                hoverinfo: 'skip', showlegend: false
+            });
+            plotData.push({
+                x: ptMidX, y: ptMidY,
+                mode: 'markers', type: 'scatter',
+                name: 'Transformers',
+                marker: {
+                    size: isHugeModel ? 3 : isLargeModel ? 8 : 12,
+                    symbol: 'hexagon',
+                    color: '#fbbf24',
+                    line: { color: '#ffffff', width: isHugeModel ? 0 : 2 }
+                },
+                text: ptText, customdata: ptCustom,
+                hovertemplate: '<b>%{text}</b><br>' +
+                              'HV Bus %{customdata[0]} (%{customdata[3]:.1f} kV)<br>' +
+                              'LV Bus %{customdata[1]} (%{customdata[4]:.1f} kV)<br>' +
+                              'Rating: %{customdata[2]:.1f} MVA<br>' +
+                              'Status: %{customdata[5]}<br>' +
+                              '<extra></extra>',
+                showlegend: true
+            });
+        }
+
+        // Voltage regulator traces (orange diamond with tap info)
+        if (regulators.length > 0) {
+            const regLineX = [];
+            const regLineY = [];
+            const regMidX = [];
+            const regMidY = [];
+            const regText = [];
+            const regCustom = [];
+
+            regulators.forEach(trafo => {
+                regLineX.push(trafo.x[0], trafo.x[1], null);
+                regLineY.push(trafo.y[0], trafo.y[1], null);
+                regMidX.push((trafo.x[0] + trafo.x[1]) / 2);
+                regMidY.push((trafo.y[0] + trafo.y[1]) / 2);
+                regText.push(trafo.name);
+                regCustom.push([trafo.hv_bus, trafo.lv_bus, trafo.rated_mva,
+                               trafo.hv_kv, trafo.lv_kv, trafo.in_service,
+                               trafo.tap_position, trafo.tap_min, trafo.tap_max]);
+            });
+
+            plotData.push({
+                x: regLineX, y: regLineY,
+                mode: 'lines', type: 'scattergl',
+                line: { color: '#f97316', width: isHugeModel ? 1 : isLargeModel ? 2 : 3, dash: 'dash' },
+                hoverinfo: 'skip', showlegend: false
+            });
+            plotData.push({
+                x: regMidX, y: regMidY,
+                mode: 'markers', type: 'scatter',
+                name: 'Regulators',
+                marker: {
+                    size: isHugeModel ? 5 : isLargeModel ? 10 : 14,
+                    symbol: 'diamond',
+                    color: '#f97316',
+                    line: { color: '#ffffff', width: isHugeModel ? 0 : 2 }
+                },
+                text: regText, customdata: regCustom,
+                hovertemplate: '<b>%{text}</b> (Regulator)<br>' +
+                              'HV Bus %{customdata[0]} (%{customdata[3]:.1f} kV)<br>' +
+                              'LV Bus %{customdata[1]} (%{customdata[4]:.1f} kV)<br>' +
+                              'Rating: %{customdata[2]:.1f} MVA<br>' +
+                              'Tap: %{customdata[6]} [%{customdata[7]}..%{customdata[8]}]<br>' +
+                              'Status: %{customdata[5]}<br>' +
+                              '<extra></extra>',
+                showlegend: true
+            });
+        }
+    }
+
+    // Shunt capacitors/reactors — square markers at bus position
+    if (topology.shunts && topology.shunts.length > 0) {
+        // Connection edges (thin lines to bus)
+        const shuntEdgeX = [];
+        const shuntEdgeY = [];
+        topology.shunts.forEach(shunt => {
+            const busIdx = topology.buses.metadata.findIndex(b => b.id === shunt.bus_id);
+            if (busIdx !== -1) {
+                shuntEdgeX.push(shunt.x, topology.buses.x[busIdx], null);
+                shuntEdgeY.push(shunt.y, topology.buses.y[busIdx], null);
+            }
+        });
+        if (shuntEdgeX.length > 0) {
+            plotData.push({
+                x: shuntEdgeX, y: shuntEdgeY,
+                mode: 'lines', type: 'scattergl',
+                line: { color: '#6b7280', width: 1, dash: 'dot' },
+                hoverinfo: 'skip', showlegend: false
+            });
+        }
+
         plotData.push({
-            x: trafoMidX,
-            y: trafoMidY,
-            mode: 'markers',
-            type: 'scattergl',
-            name: 'Transformers',
+            x: topology.shunts.map(s => s.x),
+            y: topology.shunts.map(s => s.y),
+            mode: 'markers', type: 'scatter',
+            name: 'Shunt Caps',
             marker: {
-                size: 12,
-                symbol: 'hexagon',
-                color: '#fbbf24',
-                line: {
-                    color: '#ffffff',
-                    width: 2
-                }
+                size: isHugeModel ? 4 : isLargeModel ? 7 : 10,
+                symbol: 'square',
+                color: '#06b6d4',  // Cyan/teal
+                line: { color: '#ffffff', width: isHugeModel ? 0 : 1 }
             },
-            text: trafoText,
-            customdata: trafoCustomdata,
+            text: topology.shunts.map(s => s.name),
+            customdata: topology.shunts.map(s => [s.q_mvar * 1000, s.bus_id, s.in_service]),
             hovertemplate: '<b>%{text}</b><br>' +
-                          'HV Bus %{customdata[0]} (%{customdata[3]:.1f} kV)<br>' +
-                          'LV Bus %{customdata[1]} (%{customdata[4]:.1f} kV)<br>' +
-                          'Rating: %{customdata[2]:.1f} MVA<br>' +
-                          'Status: %{customdata[5]}<br>' +
+                          'Q: %{customdata[0]:.0f} kVAr<br>' +
+                          'Bus: %{customdata[1]}<br>' +
+                          'In Service: %{customdata[2]}<br>' +
                           '<extra></extra>',
             showlegend: true
         });
     }
 
-    // Load connection edges (thin gray lines to buses)
-    if (topology.loads && topology.loads.length > 0) {
-        topology.loads.forEach(load => {
-            const busIdx = topology.buses.metadata.findIndex(b => b.id === load.bus_id);
-            if (busIdx !== -1) {
-                plotData.push({
-                    x: [load.x, topology.buses.x[busIdx]],
-                    y: [load.y, topology.buses.y[busIdx]],
-                    mode: 'lines',
-                    type: 'scattergl',
-                    line: {
-                        color: '#6b7280',
-                        width: 1,
-                        dash: 'dot'
-                    },
-                    hoverinfo: 'skip',
-                    showlegend: false
-                });
+    // Switches — short line segments between bus pairs
+    if (topology.switches && topology.switches.length > 0) {
+        const closedX = [];
+        const closedY = [];
+        const closedText = [];
+        const closedCustom = [];
+        const openX = [];
+        const openY = [];
+        const openText = [];
+        const openCustom = [];
+
+        topology.switches.forEach(sw => {
+            // Midpoint for marker placement
+            const midX = (sw.x[0] + sw.x[1]) / 2;
+            const midY = (sw.y[0] + sw.y[1]) / 2;
+
+            if (sw.closed) {
+                closedX.push(sw.x[0], sw.x[1], null);
+                closedY.push(sw.y[0], sw.y[1], null);
+                closedText.push(sw.name);
+                closedCustom.push([sw.bus, sw.element, sw.switch_type, 'Closed']);
+            } else {
+                openX.push(sw.x[0], sw.x[1], null);
+                openY.push(sw.y[0], sw.y[1], null);
+                openText.push(sw.name);
+                openCustom.push([sw.bus, sw.element, sw.switch_type, 'Open']);
             }
         });
 
-        // Load markers (square symbols, colored by log power scale)
-        const loadPowers = topology.loads.map(l => Math.abs(l.p_kw));
-        
+        // Closed switches — solid green segments
+        if (closedX.length > 0) {
+            plotData.push({
+                x: closedX, y: closedY,
+                mode: 'lines', type: 'scattergl',
+                name: 'Switches (Closed)',
+                line: { color: '#22c55e', width: isHugeModel ? 2 : isLargeModel ? 3 : 5 },
+                hoverinfo: 'skip',
+                showlegend: true
+            });
+        }
+
+        // Open switches — dashed red segments
+        if (openX.length > 0) {
+            plotData.push({
+                x: openX, y: openY,
+                mode: 'lines', type: 'scattergl',
+                name: 'Switches (Open)',
+                line: { color: '#ef4444', width: isHugeModel ? 2 : isLargeModel ? 3 : 5, dash: 'dash' },
+                hoverinfo: 'skip',
+                showlegend: true
+            });
+        }
+
+        // Switch midpoint markers for hover info
+        const allMidX = [];
+        const allMidY = [];
+        const allSwText = [];
+        const allSwCustom = [];
+        const allSwColors = [];
+        topology.switches.forEach(sw => {
+            allMidX.push((sw.x[0] + sw.x[1]) / 2);
+            allMidY.push((sw.y[0] + sw.y[1]) / 2);
+            allSwText.push(sw.name);
+            allSwCustom.push([sw.bus, sw.element, sw.switch_type, sw.closed ? 'Closed' : 'Open']);
+            allSwColors.push(sw.closed ? '#22c55e' : '#ef4444');
+        });
+
+        plotData.push({
+            x: allMidX, y: allMidY,
+            mode: 'markers', type: 'scatter',
+            name: 'Switch Status',
+            marker: {
+                size: isHugeModel ? 4 : isLargeModel ? 6 : 8,
+                symbol: 'x',
+                color: allSwColors,
+                line: { color: '#ffffff', width: 1 }
+            },
+            text: allSwText, customdata: allSwCustom,
+            hovertemplate: '<b>%{text}</b><br>' +
+                          'Bus %{customdata[0]} ↔ Bus %{customdata[1]}<br>' +
+                          'Type: %{customdata[2]}<br>' +
+                          'Status: %{customdata[3]}<br>' +
+                          '<extra></extra>',
+            showlegend: false
+        });
+    }
+
+    // Shared power color scale (loads + generators + storage).
+    // White anchored at 0 kW; cmin = symlog of max consumption (negative),
+    // cmax = symlog of max generation (positive). Asymmetric around white.
+    const _allNegKw  = [
+        ...(topology.loads      || []).map(l => -l.p_kw),
+        ...(topology.storage    || []).map(s =>  s.p_kw).filter(p => p < 0),
+    ];
+    const _allPosKw  = [
+        ...(topology.generators || []).map(g =>  g.p_kw),
+        ...(topology.storage    || []).map(s =>  s.p_kw).filter(p => p > 0),
+    ];
+    const powerMinKw     = Math.min(..._allNegKw, -1);
+    const powerMaxKw     = Math.max(..._allPosKw,  1);
+    const sharedPowerCs  = symlogColorscale(powerMinKw, powerMaxKw);
+    const sharedPowerTicks = symlogTicks(powerMinKw, powerMaxKw);
+
+    // Load connection edges (thin gray lines to buses) — consolidated into one trace
+    if (topology.loads && topology.loads.length > 0) {
+        const loadEdgeX = [];
+        const loadEdgeY = [];
+        topology.loads.forEach(load => {
+            const busIdx = topology.buses.metadata.findIndex(b => b.id === load.bus_id);
+            if (busIdx !== -1) {
+                loadEdgeX.push(load.x, topology.buses.x[busIdx], null);
+                loadEdgeY.push(load.y, topology.buses.y[busIdx], null);
+            }
+        });
+
+        // Single trace for all load connection edges
+        if (loadEdgeX.length > 0) {
+            plotData.push({
+                x: loadEdgeX,
+                y: loadEdgeY,
+                mode: 'lines',
+                type: 'scattergl',
+                line: { color: '#6b7280', width: 1, dash: 'dot' },
+                hoverinfo: 'skip',
+                showlegend: false
+            });
+        }
+
+        // Load markers (inverted triangle symbols, colored by drain intensity)
+        // Negate p_kw so consumption maps to the purple side of the shared diverging scale.
+        const loadPowers = topology.loads.map(l => symlog(-l.p_kw));
+
         plotData.push({
             x: topology.loads.map(l => l.x),
             y: topology.loads.map(l => l.y),
             mode: 'markers',
-            type: 'scattergl',
+            type: 'scatter',
             name: 'Loads',
             marker: {
-                // Use same sqrt scaling as generators for consistency
-                size: topology.loads.map(l => 10 + Math.sqrt(Math.abs(l.p_kw)) * 3),
-                symbol: 'square',
-                color: loadPowers.map(p => Math.log10(Math.max(p, 1))),  // Log scale
-                colorscale: [[0, '#ffffff'], [0.5, '#86efac'], [1, '#22c55e']],  // White to light green to green
-                cmin: 0,  // log10(1) = 0
-                cmax: 3,  // log10(1000) = 3 (covers 1-1000 kW range)
+                size: topology.loads.map(l => isHugeModel ? 3 : isLargeModel ? 5 + Math.log10(Math.max(Math.abs(l.p_kw), 1)) * 3.5 : 8 + Math.log10(Math.max(Math.abs(l.p_kw), 1)) * 5),
+                symbol: 'triangle-down',
+                color: loadPowers,
+                colorscale: sharedPowerCs.colorscale,
+                cmin: sharedPowerCs.cmin,
+                cmax: sharedPowerCs.cmax,
                 showscale: true,
                 colorbar: {
                     title: 'Power (kW)',
                     thickness: 20,
                     len: 0.7,
-                    x: 1.30,  // Position to right of line loading colorbar
+                    x: 1.30,
                     y: 0.5,
-                    tickvals: [0, 1, 2, 3],
-                    ticktext: ['1', '10', '100', '1k']
+                    tickvals: sharedPowerTicks.tickvals,
+                    ticktext: sharedPowerTicks.ticktext,
                 },
                 line: {
                     color: '#ffffff',
@@ -224,7 +574,7 @@ function initializePlot(data) {
                 }
             },
             text: topology.loads.map(l => l.name),
-            customdata: topology.loads.map(l => [l.p_kw, l.bus_id]),
+            customdata: topology.loads.map(l => [l.p_kw, busIdToName[l.bus_id] || l.bus_id]),
             hovertemplate: '<b>%{text}</b><br>' +
                           'Load: %{customdata[0]:.1f} kW<br>' +
                           'Bus: %{customdata[1]}<br>' +
@@ -255,24 +605,22 @@ function initializePlot(data) {
         });
 
         // Generator markers (triangle symbols)
-        // Size by nameplate/max power, color by current power output
-        const genCurrentPowers = topology.generators.map(g => Math.abs(g.p_kw));
-        
+        // Size by nameplate/max power, color by current power output on shared scale.
+        const genPowers = topology.generators.map(g => symlog(g.p_kw));
+
         plotData.push({
             x: topology.generators.map(g => g.x),
             y: topology.generators.map(g => g.y),
             mode: 'markers',
-            type: 'scattergl',
+            type: 'scatter',
             name: 'Generators',
             marker: {
-                // Size based on nameplate/max capacity (scaled for visibility)
-                size: topology.generators.map(g => 10 + Math.sqrt(Math.abs(g.max_p_kw)) * 3),
+                size: topology.generators.map(g => isHugeModel ? 8 : isLargeModel ? 5 + Math.log10(Math.max(Math.abs(g.max_p_kw), 1)) * 3.5 : 8 + Math.log10(Math.max(Math.abs(g.max_p_kw), 1)) * 5),
                 symbol: 'triangle-up',
-                // Color based on current power output
-                color: genCurrentPowers.map(p => Math.log10(Math.max(p, 1))),
-                colorscale: [[0, '#ffffff'], [0.5, '#86efac'], [1, '#22c55e']],
-                cmin: 0,
-                cmax: 3,
+                color: genPowers,
+                colorscale: sharedPowerCs.colorscale,
+                cmin: sharedPowerCs.cmin,
+                cmax: sharedPowerCs.cmax,
                 showscale: false,
                 line: {
                     color: '#ffffff',
@@ -313,13 +661,15 @@ function initializePlot(data) {
         });
 
         // Storage markers (diamond symbols)
-        // Size based on current stored energy (capacity * SOC), color based on net power
-        
+        // Size based on current stored energy (capacity * SOC), color on shared power scale.
+        const storRawPowers = topology.storage.map(s => s.p_kw);
+        const storPowers    = storRawPowers.map(p => symlog(p));
+
         plotData.push({
             x: topology.storage.map(s => s.x),
             y: topology.storage.map(s => s.y),
             mode: 'markers',
-            type: 'scattergl',
+            type: 'scatter',
             name: 'Storage',
             marker: {
                 // Size based on current stored energy (kWh * SOC%)
@@ -328,11 +678,11 @@ function initializePlot(data) {
                     return 15 + Math.min(30, storedEnergy / 3);
                 }),
                 symbol: 'diamond',
-                // Color based on net power (absolute value with log scale)
-                color: topology.storage.map(s => Math.log10(Math.max(Math.abs(s.p_kw), 1))),
-                colorscale: [[0, '#ffffff'], [0.5, '#86efac'], [1, '#22c55e']],
-                cmin: 0,
-                cmax: 3,
+                // Color: purple=charging (drain), white=idle, green=discharging (supply)
+                color: storPowers,
+                colorscale: sharedPowerCs.colorscale,
+                cmin: sharedPowerCs.cmin,
+                cmax: sharedPowerCs.cmax,
                 showscale: false,
                 line: {
                     color: '#ffffff',
@@ -370,12 +720,16 @@ function initializePlot(data) {
         x: topology.buses.x,
         y: topology.buses.y,
         mode: 'markers',
-        type: 'scattergl',
+        type: 'scatter',
         name: 'Buses',
         marker: {
-            size: 16,  // Increased from 12 to make easier to hover
+            size: isHugeModel ? 4 : isLargeModel ? 8 : 16,
             color: busVoltagePercent,
-            colorscale: [[0, '#3b82f6'], [0.5, '#22c55e'], [1, '#ef4444']],  // Blue to green to red
+            // Diverging scale centred on nominal (1.0 pu).
+            // Stops align with ANSI C84.1 limits: ±5% = teal/orange, ±10% = brown/red.
+            // Cool (teal) for undervoltage warning, warm (orange/red) for overvoltage —
+            // thermally opposite sides prevent yellow/orange muddle.
+            colorscale: [[0, '#92400e'], [0.25, '#06b6d4'], [0.5, '#22c55e'], [0.75, '#f97316'], [1, '#ef4444']],
             cmin: 0,
             cmax: 100,
             colorbar: {
@@ -399,22 +753,24 @@ function initializePlot(data) {
     };
     plotData.push(busTrace);
     
-    // Bus labels (separate trace to avoid blocking hover)
-    const busLabelTrace = {
-        x: topology.buses.x,
-        y: topology.buses.y,
-        mode: 'text',
-        type: 'scattergl',
-        text: topology.buses.metadata.map(b => b.name),
-        textposition: 'top center',
-        textfont: {
-            size: 10,
-            color: '#ffffff'
-        },
-        hoverinfo: 'skip',
-        showlegend: false
-    };
-    plotData.push(busLabelTrace);
+    // Bus labels — skip for models with >100 buses (labels overlap and slow rendering)
+    if (topology.buses.metadata.length <= 100) {
+        const busLabelTrace = {
+            x: topology.buses.x,
+            y: topology.buses.y,
+            mode: 'text',
+            type: 'scattergl',
+            text: topology.buses.metadata.map(b => b.name),
+            textposition: 'top center',
+            textfont: {
+                size: 10,
+                color: '#ffffff'
+            },
+            hoverinfo: 'skip',
+            showlegend: false
+        };
+        plotData.push(busLabelTrace);
+    }
 
     const layout = {
         title: {
@@ -459,7 +815,9 @@ function initializePlot(data) {
         modeBarButtonsToRemove: ['lasso2d', 'select2d']
     };
 
-    Plotly.newPlot('plotly-chart', plotData, layout, config);
+    // Use Plotly.react for updates — preserves zoom/pan state.
+    // Falls back to newPlot on first render (no existing chart).
+    Plotly.react('plotly-chart', plotData, layout, config);
     currentVersion = data.ver;
 
     console.log('Plot initialized with version', currentVersion);
@@ -470,66 +828,11 @@ function updatePlot(data) {
     const state = data.state;
     const topology = data.topology;
 
-    const numLines = topology.lines.length;
-    const numTransformers = (topology.transformers || []).length;
-    const numLoads = (topology.loads || []).length;
-    const numGenerators = (topology.generators || []).length;
-    const numStorage = (topology.storage || []).length;
-
-    // Calculate bus trace index
-    // Trace order: line-visuals (N), line-midpoints (N), line-loading-legend (1), transformer-visuals (N), transformer-markers (1), load-edges, load-markers, gen-edges, gen-markers, storage-edges, storage-markers, buses, bus-labels
-    let traceIdx = numLines * 2;  // Each line has 2 traces (visual + midpoint)
-    traceIdx += 1;  // Line loading legend trace
-    traceIdx += numTransformers;  // Transformer line visuals (one per transformer)
-    if (numTransformers > 0) traceIdx += 1;  // Single transformer marker trace for legend
-    if (numLoads > 0) traceIdx += numLoads + 1;  // edges + marker trace
-    if (numGenerators > 0) traceIdx += numGenerators + 1;  // edges + marker trace
-    if (numStorage > 0) traceIdx += numStorage + 1;  // edges + marker trace
-    const busTraceIdx = traceIdx;
-
-    // Update bus voltages
-    const busVoltagePercent = state.bus_voltage.map(v => {
-        const deviation = (v - 1.0) * 100;
-        return 50 + (deviation * 5);
-    });
-    
-    Plotly.restyle('plotly-chart', {
-        'marker.color': [busVoltagePercent]
-    }, [busTraceIdx]);
-
-    // Update line status and loading
-    for (let i = 0; i < numLines; i++) {
-        const isOpen = state.line_status[i];
-        const loading = state.line_loading[i];
-
-        // Calculate color based on loading percentage (green -> yellow -> red)
-        let lineColor;
-        if (!isOpen) {
-            lineColor = '#ef4444';
-        } else if (loading < 50) {
-            const t = loading / 50;
-            lineColor = `rgba(${Math.round(34 + (251-34)*t)}, ${Math.round(197 + (191-197)*t)}, ${Math.round(94 + (36-94)*t)}, 0.8)`;
-        } else {
-            const t = (loading - 50) / 50;
-            lineColor = `rgba(${Math.round(251 + (239-251)*t)}, ${Math.round(191 + (68-191)*t)}, ${Math.round(36 + (68-36)*t)}, 0.8)`;
-        }
-
-        // Update line visual trace (every 2*i)
-        Plotly.restyle('plotly-chart', {
-            'line.color': lineColor,
-            'line.width': isOpen ? 2 : 1,
-            'line.dash': isOpen ? 'solid' : 'dash'
-        }, [i * 2]);
-
-        // Update line midpoint marker trace (every 2*i + 1)
-        Plotly.restyle('plotly-chart', {
-            'marker.color': [lineColor],  // Use same color as line visual
-            'customdata': [[[loading, topology.lines[i].from_bus, topology.lines[i].to_bus, isOpen]]]
-        }, [i * 2 + 1]);
-    }
-
+    // With consolidated traces, the simplest correct approach for updates
+    // is to re-render the full plot. Plotly.react() is efficient — it diffs
+    // the data and only redraws what changed.
+    initializePlot(data);
     currentVersion = data.ver;
-    console.log('Plot updated, version', currentVersion);
 }
 
 // Update status display
@@ -537,7 +840,11 @@ function updateStatus(data) {
     const state = data.state;
     const topology = data.topology;
 
-    // Simulation time
+    // Simulation wall-clock (day-of-week + time-of-day)
+    document.getElementById('sim-clock').textContent =
+        simClock(state.sim_time);
+
+    // Simulation time (seconds elapsed)
     document.getElementById('sim-time').textContent =
         `${state.sim_time.toFixed(1)}s`;
 
@@ -562,19 +869,25 @@ function updateStatus(data) {
     const totalLoad = topology.loads ? topology.loads.reduce((sum, load) => sum + Math.abs(load.p_kw), 0) : 0;
     document.getElementById('total-load').textContent = `${totalLoad.toFixed(0)} kW`;
 
-    // Total Grid (non-DER) generation (includes base generators with type 'wye' or 'Grid')
-    const totalGrid = topology.generators ? 
-        topology.generators.filter(g => !g.type || g.type === 'Grid' || g.type === 'wye').reduce((sum, gen) => sum + gen.p_kw, 0) : 0;
-    document.getElementById('total-grid').textContent = `${totalGrid.toFixed(0)} kW`;
+    // topology.generators[i].p_kw = Pmpp (rated setpoint) from topology — same source
+    // used by individual node display.  Both totals and nodes read this unified value.
 
-    // Total PV generation
-    const totalPV = topology.generators ? 
-        topology.generators.filter(g => g.type === 'PV').reduce((sum, gen) => sum + gen.p_kw, 0) : 0;
+    // Ext_grid import: positive = grid supplying local load,
+    // negative = local generation exporting to grid.
+    const extGridMW = state.ext_grid_import_mw || 0;
+    const extGridLabel = extGridMW >= 0
+        ? `${(extGridMW * 1000).toFixed(0)} kW import`
+        : `${(-extGridMW * 1000).toFixed(0)} kW export`;
+    document.getElementById('total-grid').textContent = extGridLabel;
+
+    // Total PV generation - DERType.SOLAR_PV = 'solar_pv'
+    const totalPV = (topology.generators || []).reduce(
+        (sum, gen) => gen.type === 'solar_pv' ? sum + gen.p_kw : sum, 0);
     document.getElementById('total-pv').textContent = `${totalPV.toFixed(0)} kW`;
 
-    // Total Wind generation
-    const totalWind = topology.generators ? 
-        topology.generators.filter(g => g.type === 'Wind').reduce((sum, gen) => sum + gen.p_kw, 0) : 0;
+    // Total Wind generation - DERType.WIND = 'wind'
+    const totalWind = (topology.generators || []).reduce(
+        (sum, gen) => gen.type === 'wind' ? sum + gen.p_kw : sum, 0);
     document.getElementById('total-wind').textContent = `${totalWind.toFixed(0)} kW`;
 
     // Total BESS (positive = discharging, negative = charging)
@@ -583,7 +896,8 @@ function updateStatus(data) {
     const bessEl = document.getElementById('total-bess');
     bessEl.textContent = `${totalBESS.toFixed(0)} kW`;
     // Color code: green for charging (negative), red for discharging (positive)
-    bessEl.style.color = totalBESS > 0 ? '#4ade80' : totalBESS < 0 ? '#f87171' : '#ffffff';
+    // positive = discharging (helping supply load) → green; negative = charging → amber
+    bessEl.style.color = totalBESS > 0 ? '#4ade80' : totalBESS < 0 ? '#fbbf24' : '#ffffff';
 }
 
 // Fetch and process state data

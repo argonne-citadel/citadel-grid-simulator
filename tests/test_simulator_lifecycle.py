@@ -249,8 +249,8 @@ class TestBESSControl:
 
         simulator_with_storage.step()
 
-        # Verify charging
-        assert simulator_with_storage.engine.net.storage.at[storage_id, "p_mw"] == -0.02
+        # Caller negative (charge) → pandapower positive (consuming = charging)
+        assert simulator_with_storage.engine.net.storage.at[storage_id, "p_mw"] == 0.02
 
     def test_bess_discharge_command(self, simulator_with_storage):
         """Test BESS discharging command."""
@@ -262,8 +262,8 @@ class TestBESSControl:
 
         simulator_with_storage.step()
 
-        # Verify discharging
-        assert simulator_with_storage.engine.net.storage.at[storage_id, "p_mw"] == 0.02
+        # Caller positive (discharge) → pandapower negative (injection = discharging)
+        assert simulator_with_storage.engine.net.storage.at[storage_id, "p_mw"] == -0.02
 
 
 class TestSimulatorStatistics:

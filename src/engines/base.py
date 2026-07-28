@@ -19,8 +19,8 @@ from ..schemas.common import (
     GeneratorID,
     LineID,
     LoadID,
-    PowerMW,
     PowerMVAr,
+    PowerMW,
     StorageID,
     TransformerID,
 )
@@ -285,6 +285,16 @@ class PowerSystemEngine(ABC):
             ValueError: If tap_position is out of valid range.
         """
         pass
+
+    @abstractmethod
+    def reset(self) -> None:
+        """Reset to clean initial state with stochastic load variation.
+
+        Called before each experimental run. Must reload the network, apply load
+        fuzz, and run an initial power flow so get_current_state() is valid on
+        return. Raises RuntimeError on convergence failure — never silently
+        degrades.
+        """
 
     # ========================================================================
     # Command Execution (Convenience Methods)

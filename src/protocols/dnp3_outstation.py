@@ -15,8 +15,8 @@ This file is a placeholder for future DNP3 implementation.
 import logging
 from typing import Any, Dict, Optional
 
-from .base import DNP3Handler
 from ..engines.base import PowerSystemEngine
+from .base import DNP3Handler
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ class GridDNP3Outstation(DNP3Handler):
         self,
         engine: PowerSystemEngine,
         config: Optional[Dict[str, Any]] = None,
-        host: str = "0.0.0.0",
+        host: str = "0.0.0.0",  # nosec B104 — containerized DNP3 outstation; bind-to-all required for docker port mapping
         port: int = 20000,
     ):
         """

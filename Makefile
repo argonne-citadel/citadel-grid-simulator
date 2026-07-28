@@ -1,4 +1,4 @@
-.PHONY: help init build test run clean lint format black security type-check
+.PHONY: help init build test run clean lint format security type-check cistage
 
 # Colors for pretty printing
 ESC := $(shell printf '\033')
@@ -20,8 +20,8 @@ help:
 	@echo "  clean      - Remove generated files"
 	@echo ""
 	@echo "$(COLOR_BOLD)Development Commands:$(COLOR_RESET)"
-	@echo "  black      - Format Python code using black"
-	@echo "  lint       - Run code quality checks (black + mypy)"
+	@echo "  format     - Format Python code using ruff format"
+	@echo "  lint       - Run code quality checks (ruff format --check + ruff check)"
 	@echo "  type-check - Run type checking with mypy"
 	@echo "  security   - Run security checks (bandit + pip-audit)"
 
@@ -49,7 +49,7 @@ init: environment-dev.yml
 	@cp .git-hooks/pre-commit .git/hooks/pre-commit
 	@chmod +x .git/hooks/pre-commit
 	@echo "$(COLOR_GREEN)Development environment created successfully!$(COLOR_RESET)"
-	@echo "$(COLOR_GREEN)Git pre-commit hook installed - black will run automatically before commits$(COLOR_RESET)"
+	@echo "$(COLOR_GREEN)Git pre-commit hook installed - ruff format will run automatically before commits$(COLOR_RESET)"
 
 build: environment.yml
 	@echo "$(COLOR_BOLD)Setting up production environment...$(COLOR_RESET)"
@@ -61,14 +61,14 @@ install-dev: environment-dev.yml
 	@echo "$(COLOR_GREEN)Development environment created successfully!$(COLOR_RESET)"
 
 # Development commands
-black:
+format:
 	@echo "$(COLOR_BOLD)Formatting Python code...$(COLOR_RESET)"
-	@${MICROMAMBA_DEV} black -q src/
+	@${MICROMAMBA_DEV} ruff format src/
 	@echo "$(COLOR_GREEN)Formatting complete!$(COLOR_RESET)"
 
 lint:
 	@echo "$(COLOR_BOLD)Running code quality checks...$(COLOR_RESET)"
-	@${MICROMAMBA_DEV} black --check --diff -q src/
+	@${MICROMAMBA_DEV} ruff format --check src/
 	@echo "$(COLOR_GREEN)Code quality checks passed!$(COLOR_RESET)"
 
 type-check:
@@ -86,6 +86,9 @@ test:
 	@echo "$(COLOR_BOLD)Running tests...$(COLOR_RESET)"
 	@PYTHONPATH=src ${MICROMAMBA_DEV} python -m pytest tests/ -v
 	@echo "$(COLOR_GREEN)Tests complete!$(COLOR_RESET)"
+
+cistage: format type-check security test
+	@echo "$(COLOR_GREEN)CI stage complete!$(COLOR_RESET)"
 
 pipbuild:
 	@echo "$(COLOR_BOLD)Building distributable packages...$(COLOR_RESET)"

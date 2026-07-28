@@ -8,10 +8,12 @@ designed for distribution-level DER research. It provides:
 - Manageable scale for cyber/control experimentation
 """
 
+import logging
+from typing import Any, Dict, List, Optional
+
+import numpy as np
 import pandapower as pp
 import pandapower.networks as pn
-from typing import Dict, Any, Optional, List
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -47,15 +49,16 @@ class DickertLVModel:
             f"Initializing Dickert LV model (feeders_range={feeders_range}, linetype={linetype})"
         )
 
-        try:
-            self.net = pn.create_dickert_lv_network(
-                feeders_range=feeders_range, linetype=linetype
-            )
-        except Exception as e:
-            logger.error(f"Failed to create Dickert LV network: {e}")
-            logger.info("Falling back to synthetic voltage control LV network")
-            # Fallback to alternative synthetic LV network
-            self.net = pn.create_synthetic_voltage_control_lv_network()
+        # Removed silent fallback to create_synthetic_voltage_control_lv_network
+        # on Dickert creation failure — different topology, different bus/line
+        # counts, all silently substituted with only an INFO log. Topology
+        # drift between supposedly-identical model invocations breaks both
+        # training reproducibility and attack scenarios that assume specific
+        # bus indices. If create_dickert_lv_network fails, the caller needs
+        # to know.
+        self.net = pn.create_dickert_lv_network(
+            feeders_range=feeders_range, linetype=linetype
+        )
 
         self.feeders_range = feeders_range
         self.linetype = linetype
@@ -108,9 +111,18 @@ class DickertLVModel:
             RuntimeError: If power flow fails
         """
         # Validate network structure
-        assert len(self.net.bus) > 0, "Network has no buses"
-        assert len(self.net.line) > 0, "Network has no lines"
-        assert len(self.net.load) > 0, "Network has no loads"
+        if len(self.net.bus) == 0:
+            raise RuntimeError(
+                "Network has no buses — _setup_network() did not populate the pandapower net"
+            )
+        if len(self.net.line) == 0:
+            raise RuntimeError(
+                "Network has no lines — _setup_network() did not populate the pandapower net"
+            )
+        if len(self.net.load) == 0:
+            raise RuntimeError(
+                "Network has no loads — _setup_network() did not populate the pandapower net"
+            )
 
         # Run initial power flow
         try:
@@ -279,14 +291,53 @@ class DickertLVModel:
         logger.info(f"Added storage at bus {bus}: {p_mw} MW, {max_e_mwh} MWh")
         return int(storage_idx)
 
-    def reset(self):
-        """Reset the network to initial state."""
-        logger.info("Resetting Dickert LV model to initial state")
-        try:
-            self.net = pn.create_dickert_lv_network(
-                feeders_range=self.feeders_range, linetype=self.linetype
+    def _fuzz_loads(self, scale: float = 0.10) -> None:
+        """Apply ±scale uniform noise to loads and DERs for run-to-run variation.
+
+        Uses an unseeded RNG so each reset produces a genuinely distinct operating
+        point. ±10% is consistent with realistic demand uncertainty on an LV feeder
+        (IEC 60038 ±10% voltage tolerance implies similar load variation tolerance).
+        Generators (DERs) are scaled by ±5% to reflect irradiance/wind variability.
+        """
+        rng = np.random.default_rng()  # unseeded — different every call
+
+        if len(self.net.load) > 0:
+            noise = 1.0 + rng.uniform(-scale, scale, size=len(self.net.load))
+            self.net.load["p_mw"] = (self.net.load["p_mw"] * noise).clip(lower=0.0)
+            self.net.load["q_mvar"] = (self.net.load["q_mvar"] * noise).clip(lower=0.0)
+            logger.debug(
+                f"Load fuzz applied: ±{scale * 100:.0f}% on {len(self.net.load)} loads"
             )
-        except Exception:
-            self.net = pn.create_synthetic_voltage_control_lv_network()
+
+        if hasattr(self.net, "sgen") and len(self.net.sgen) > 0:
+            gen_noise = 1.0 + rng.uniform(
+                -scale / 2, scale / 2, size=len(self.net.sgen)
+            )
+            self.net.sgen["p_mw"] = (self.net.sgen["p_mw"] * gen_noise).clip(lower=0.0)
+            logger.debug(
+                f"DER fuzz applied: ±{scale / 2 * 100:.0f}% on {len(self.net.sgen)} DERs"
+            )
+
+    def reset(self):
+        """Reset the network to initial state with stochastic load variation.
+
+        Fuzzes loads and DERs by ±10%/±5% respectively to ensure each experimental
+        run starts from a genuinely distinct operating point. Without fuzzing, every
+        reset produces an identical power flow solution, making repeated-run statistics
+        degenerate (σ=0 for grid metrics under GraphML which blocks all commands).
+        """
+        logger.info("Resetting Dickert LV model to initial state")
+        # The previous reset silently substituted
+        # `create_synthetic_voltage_control_lv_network()` — a different
+        # topology — when create_dickert_lv_network failed. Training-data
+        # prep calls reset() iteratively; unflagged topology drift between
+        # runs corrupts experiment reproducibility (each run trains on a
+        # different graph without anyone noticing). Let the exception
+        # propagate; if the LV network can't be created, that's the
+        # answer the caller needs.
+        self.net = pn.create_dickert_lv_network(
+            feeders_range=self.feeders_range, linetype=self.linetype
+        )
         self._setup_network()
+        self._fuzz_loads()
         self.validate()

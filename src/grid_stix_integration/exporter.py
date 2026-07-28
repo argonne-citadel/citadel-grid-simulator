@@ -4,24 +4,19 @@ Grid-STIX Exporter
 Exports grid simulation data as STIX 2.1 bundles for cybersecurity analysis.
 """
 
-from typing import List, Dict, Any, Optional
-from datetime import datetime
 import json
+from datetime import datetime
 from pathlib import Path
-import sys
+from typing import Any, Dict, List, Optional
 
-# Add Grid-STIX library to path
-GRID_STIX_PATH = Path(
-    "/home/bblakely/code/ztcard/ztcard-stack/src/stack/dockerfiles/console/ztcard-grid-stix/python"
-)
-if str(GRID_STIX_PATH) not in sys.path:
-    sys.path.insert(0, str(GRID_STIX_PATH))
-
+# grid-stix and stix2 are pip-installed via environment.yml — no sys.path
+# hackery needed. The previous code hardcoded a developer-machine path
+# (/home/bblakely/code/...) into sys.path; removed.
 from stix2 import Bundle
 
+from ..schemas.state import GridState
 from .annotator import GridSTIXAnnotator
 from .telemetry import TelemetryConverter
-from ..schemas.state import GridState
 
 
 class STIXExporter:

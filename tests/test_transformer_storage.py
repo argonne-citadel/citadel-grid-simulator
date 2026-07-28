@@ -316,8 +316,8 @@ class TestStorageIntegration:
         # Run simulation step
         simulator.step()
 
-        # Verify storage is charging
-        assert net.storage.at[storage_id, "p_mw"] == -0.02
+        # Caller negative (charge) → pandapower positive (consuming = charging)
+        assert net.storage.at[storage_id, "p_mw"] == 0.02
 
         simulator.stop()
 
@@ -365,8 +365,10 @@ class TestStorageIntegration:
         result = engine.run_simulation()
 
         assert result.converged is True
-        assert net.storage.at[0, "p_mw"] == -0.02
-        assert net.storage.at[1, "p_mw"] == 0.02
+        # set_storage_power negates: -0.02 caller (charge) → +0.02 pandapower
+        #                             +0.02 caller (discharge) → -0.02 pandapower
+        assert net.storage.at[0, "p_mw"] == 0.02
+        assert net.storage.at[1, "p_mw"] == -0.02
 
 
 class TestTransformerStorageCombined:

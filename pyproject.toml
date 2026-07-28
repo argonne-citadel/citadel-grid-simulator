@@ -33,6 +33,7 @@ dependencies = [
     "grid-stix~=2.6",
     "flask~=3.1.0",
     "pandapower~=3.2.0",
+    "prometheus-client~=0.21.0",
     "pydantic~=2.12.0",
     "pymodbus~=3.11.0",
     "python-dotenv~=1.2.0",
@@ -43,7 +44,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "bandit>=1.8",
-    "black>=25.1",
+    "ruff>=0.13",
     "mypy>=1.17",
     "pytest>=8.4",
     "pytest-asyncio>=1.0",
@@ -66,10 +67,34 @@ package-dir = {"citadel_simulator" = "src"}
 [tool.setuptools.package-data]
 grid_stix = ["py.typed"]
 
-[tool.black]
+[tool.ruff]
 line-length = 88
-target-version = ['py312']
-include = '\.pyi?$'
+target-version = "py312"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# Lint config mirrors ztcard-stack supermodule's [tool.ruff.lint]. Ruff
+# discovers config from the nearest pyproject.toml during discovery, so
+# the supermodule's `ruff check` invocation on dockerfiles/grid-simulator
+# picks up this file's rules (not the supermodule's). Keep these
+# consistent with the supermodule.
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "C901", "PLR0915"]
+ignore = [
+    "E501",    # line-too-long — ruff format enforces 88; existing docstrings/URLs exempt
+    "F401",    # unused-import — clean up per-component, not in bulk
+    "F841",    # unused-variable — same
+    "W291",    # trailing-whitespace in multiline strings — ruff format handles normal code;
+               # remaining occurrences are in multi-line template strings where fixing is unsafe
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pylint]
+max-statements = 50
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -83,3 +108,9 @@ python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
+plugins = ["pydantic.mypy"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true

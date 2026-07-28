@@ -1,10 +1,10 @@
 """Real-time grid simulation core with 1-second timestep."""
 
-import time
-import threading
-from queue import Queue, Empty
-from typing import Dict, Any, Optional, Callable
 import logging
+import threading
+import time
+from queue import Empty, Queue
+from typing import Any, Callable, Dict, Optional
 
 from .engines.base import PowerSystemEngine
 from .schemas.commands import (
@@ -12,6 +12,7 @@ from .schemas.commands import (
     CommandType,
     GeneratorCommand,
     LoadCommand,
+    ReactorCommand,
     StorageCommand,
 )
 from .schemas.state import GridState
@@ -59,13 +60,40 @@ class GridSimulator:
         self._sim_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
 
+        # Cached topology — populated once from the main thread (before
+        # the simulation loop starts) so the web API never calls
+        # engine.get_topology() from the Flask thread.  OpenDSS uses
+        # global C-library state; concurrent access from multiple threads
+        # causes segfaults on large models (IEEE 8500).
+        from .schemas.topology import NetworkTopology
+
+        self._cached_topology: Optional[NetworkTopology] = None
+
+        # Engine lock — serializes ALL engine access across threads.
+        # The simulation thread holds this during step() (run_simulation +
+        # get_current_state + callbacks).  Modbus write handlers acquire it
+        # before calling engine.set_breaker_status / set_generator_setpoint.
+        # Without this lock, concurrent dss.* calls from the Modbus async
+        # thread and the simulation thread segfault the OpenDSS C library.
+        self.engine_lock = threading.RLock()
+
         # Statistics
         self.stats = {
             "total_steps": 0,
             "failed_steps": 0,
+            "non_converged_steps": 0,
             "commands_processed": 0,
             "average_step_time": 0.0,
         }
+
+        # Tracks whether the most recent step() power flow converged.
+        # Written by the simulator thread; read by the web API thread.
+        # Python bool assignment is atomic under the GIL, so no lock is needed
+        # for this single-flag read. web_api uses this to set the "converged"
+        # field in /state, overriding the stale GridState.converged value that
+        # would otherwise remain True after a NR failure (since no new GridState
+        # is appended to state_history when step() throws).
+        self.last_step_converged: bool = True
 
         logger.info(f"GridSimulator initialized with {timestep_seconds}s timestep")
 
@@ -116,69 +144,94 @@ class GridSimulator:
             command: Command to execute
         """
         try:
-            self.engine.execute_command(command)
+            if isinstance(command, ReactorCommand):
+                # ReactorCommand targets gen table entries (not sgens).
+                # Dispatched directly to set_reactor_gen_output() which is
+                # specific to PandaPowerEngine. The base execute_command()
+                # only knows about sgen-based GeneratorCommand.
+                set_reactor = getattr(self.engine, "set_reactor_gen_output", None)
+                if set_reactor is None:
+                    raise TypeError(
+                        f"Engine {type(self.engine).__name__} does not support "
+                        "ReactorCommand (missing set_reactor_gen_output)"
+                    )
+                set_reactor(command.gen_id, command.p_mw, command.q_mvar)
+            else:
+                self.engine.execute_command(command)
         except Exception as e:
             logger.error(f"Error executing command {type(command).__name__}: {e}")
 
-    def _control_bess(self):
-        """
-        Dynamic BESS control based on grid net load.
+    # Target ext_grid import (MW). BESS discharges when import exceeds this,
+    # charges when import falls below it (e.g. DER surplus). Based on no-BESS
+    # operating point (~2.965 MW) minus one BESS unit capacity (0.25 MW).
+    _BESS_IMPORT_TARGET_MW: float = 2.8
 
-        Controls battery storage to balance generation and load:
-        - If generation > load (excess): charge batteries (negative power)
-        - If load > generation (deficit): discharge batteries (positive power)
-        - Power proportional to imbalance, limited by battery capacity and SOC
+    # Deadband around target (MW). Import within ±50 kW of target → BESS idles.
+    # Prevents micro-cycling when close to target; 50 kW ≈ 20% of one unit.
+    _BESS_DEADBAND_MW: float = 0.05
+
+    def _control_bess(self) -> None:  # noqa: C901
+        """Peak-shaving BESS control targeting a fixed ext_grid import limit.
+
+        Uses the previous timestep's power flow result as feedback (one-step delay,
+        realistic for a real controller reading its SCADA telemetry). Dispatches each
+        storage unit to reduce or increase ext_grid import toward _BESS_IMPORT_TARGET_MW.
+
+        Sign convention (matching set_storage_power): positive = discharge (inject
+        to grid), negative = charge (absorb from grid).
         """
-        # Get current state
         state = self.engine.get_current_state()
-
         if not state.storage:
-            return  # No storage to control
+            return
 
-        # Calculate total generation
-        total_gen = sum(gen.p_mw for gen in state.generators.values())
+        if state.total_generation_mw is None:
+            return  # No power flow result yet
 
-        # Calculate total load
-        total_load = sum(load.p_mw for load in state.loads.values())
+        # ext_grid import from previous step.
+        # state.total_generation_mw = ext_grid + DER sgens (BESS excluded per engine).
+        total_der_mw = sum(gen.p_mw for gen in state.generators.values())
+        ext_grid_import_mw = state.total_generation_mw - total_der_mw
 
-        # Net imbalance (positive = excess generation, negative = deficit)
-        net_imbalance = total_gen - total_load
+        # Error: positive = import above target → discharge to reduce import.
+        error_mw = ext_grid_import_mw - self._BESS_IMPORT_TARGET_MW
 
-        # Distribute imbalance across all BESS units proportionally
+        if abs(error_mw) < self._BESS_DEADBAND_MW:
+            for storage_id in state.storage:
+                try:
+                    self.engine.set_storage_power(storage_id, 0.0)
+                except Exception as e:
+                    logger.error(f"Error idling storage {storage_id}: {e}")
+            return
+
         num_bess = len(state.storage)
 
         for storage_id, storage_state in state.storage.items():
-            # Get storage info
             try:
                 storage_info = self.engine.get_storage_info(storage_id)
             except KeyError:
                 continue
 
-            # Calculate max power (assume C/4 rate)
-            max_p_mw = storage_info.energy_capacity_mwh / 4.0
+            max_p_mw = storage_info.energy_capacity_mwh / 4.0  # C/4 rate
             soc = storage_state.soc_percent
 
-            # Calculate target power for this BESS (share of total imbalance)
-            target_p_mw = (
-                -net_imbalance / num_bess
-            )  # Negative because we want to absorb excess
+            # Each unit handles an equal share of the error.
+            # Positive target = discharge (import too high); negative = charge.
+            target_p_mw = error_mw / num_bess
 
-            # Limit based on SOC constraints
-            if target_p_mw < 0:  # Charging
-                if soc >= 90.0:
-                    target_p_mw = 0.0
-                elif soc >= 80.0:
-                    target_p_mw *= (90.0 - soc) / 10.0
-            else:  # Discharging
+            # SOC limits: taper output near empty (discharge) or full (charge)
+            if target_p_mw > 0:  # Discharging
                 if soc <= 10.0:
                     target_p_mw = 0.0
                 elif soc <= 20.0:
                     target_p_mw *= (soc - 10.0) / 10.0
+            else:  # Charging
+                if soc >= 90.0:
+                    target_p_mw = 0.0
+                elif soc >= 80.0:
+                    target_p_mw *= (90.0 - soc) / 10.0
 
-            # Limit to capacity
             target_p_mw = max(-max_p_mw, min(max_p_mw, target_p_mw))
 
-            # Set the storage power
             try:
                 self.engine.set_storage_power(storage_id, target_p_mw)
             except Exception as e:
@@ -201,59 +254,87 @@ class GridSimulator:
                 logger.error(f"Error in state callback {callback_name}: {e}")
 
     def step(self):
-        """Execute one simulation timestep."""
+        """Execute one simulation timestep.
+
+        Acquires engine_lock for the entire step to prevent concurrent
+        OpenDSS access from Modbus write handlers (which run in the
+        asyncio thread).
+        """
         step_start = time.time()
 
-        try:
-            # Process queued commands
-            self._process_commands()
+        with self.engine_lock:
+            try:
+                # Process queued commands
+                self._process_commands()
 
-            # Dynamic BESS control based on net load
-            self._control_bess()
+                # Dynamic BESS control based on net load
+                self._control_bess()
 
-            # Run power flow using engine
-            from .schemas.results import PowerFlowConfig, PowerFlowAlgorithm
+                # Run power flow using engine
+                from .schemas.results import PowerFlowAlgorithm, PowerFlowConfig
 
-            config = PowerFlowConfig(
-                algorithm=PowerFlowAlgorithm.NEWTON_RAPHSON,
-                max_iterations=20,
-                tolerance=1e-6,
-            )
-            result = self.engine.run_simulation(config)
+                config = PowerFlowConfig(
+                    algorithm=PowerFlowAlgorithm.NEWTON_RAPHSON,
+                    max_iterations=20,
+                    tolerance=1e-6,
+                )
+                result = self.engine.run_simulation(config)
 
-            if not result.converged:
-                logger.warning("Power flow did not converge")
+                if not result.converged:
+                    # Pre-fix: just a warning, then `last_step_converged = True`
+                    # below; downstream /state consumers saw a non-converged solve
+                    # labeled converged. Now counted in stats and reflected in the
+                    # flag set after the try-block.
+                    logger.warning(
+                        "Power flow did not converge (algorithm=%s, max_iter=%d, "
+                        "tol=%g); state will be published with converged=False "
+                        "and last_step_converged=False so downstream consumers "
+                        "can filter the step out.",
+                        config.algorithm.value,
+                        config.max_iterations,
+                        config.tolerance,
+                    )
+                    self.stats["non_converged_steps"] += 1
 
-            # Update battery SOC based on power flow results
-            if hasattr(self.engine, "update_storage_soc"):
-                self.engine.update_storage_soc(timestep_seconds=self.timestep)
+                # Update battery SOC based on power flow results
+                if hasattr(self.engine, "update_storage_soc"):
+                    self.engine.update_storage_soc(timestep_seconds=self.timestep)
 
-            # Get current state from engine
-            state = self.engine.get_current_state()
+                # Get current state from engine
+                state = self.engine.get_current_state()
 
-            # Store in history
-            with self._lock:
-                self.state_history.append(state)
-                if len(self.state_history) > self.max_history_length:
-                    self.state_history.pop(0)
+                # Store in history
+                with self._lock:
+                    self.state_history.append(state)
+                    if len(self.state_history) > self.max_history_length:
+                        self.state_history.pop(0)
 
-            # Publish to callbacks
-            self._publish_state(state)
+                # Publish to callbacks
+                self._publish_state(state)
 
-            # Update simulation time
-            self.current_time += self.timestep
+                # Update simulation time
+                self.current_time += self.timestep
 
-            # Update statistics
-            self.stats["total_steps"] += 1
-            step_time = time.time() - step_start
-            self.stats["average_step_time"] = (
-                self.stats["average_step_time"] * (self.stats["total_steps"] - 1)
-                + step_time
-            ) / self.stats["total_steps"]
+                # Update statistics
+                self.stats["total_steps"] += 1
+                step_time = time.time() - step_start
+                self.stats["average_step_time"] = (
+                    self.stats["average_step_time"] * (self.stats["total_steps"] - 1)
+                    + step_time
+                ) / self.stats["total_steps"]
 
-        except Exception as e:
-            logger.error(f"Error in simulation step: {e}")
-            self.stats["failed_steps"] += 1
+                # Reflect the actual convergence outcome (atomic write under GIL).
+                # Pre-fix this was hardcoded True on any non-throwing step, which
+                # masked non-converged solves from /state and downstream attack-
+                # prevention metrics. The except below still sets False on raise.
+                self.last_step_converged = bool(result.converged)
+
+            except Exception as e:
+                logger.error(f"Error in simulation step: {e}")
+                self.stats["failed_steps"] += 1
+                # Mark non-convergence. Written here so web_api can expose it in /state
+                # rather than returning the stale pre-islanding state's converged=True.
+                self.last_step_converged = False
 
     def _run_loop(self, duration_seconds: Optional[float] = None):
         """
@@ -325,6 +406,26 @@ class GridSimulator:
             self._sim_thread.join(timeout=5.0)
 
         logger.info("Simulation stopped")
+
+    def cache_topology(self) -> None:
+        """Snapshot the engine topology for thread-safe access.
+
+        Must be called from the main thread BEFORE starting the simulation
+        loop.  After this, get_cached_topology() returns the snapshot
+        without touching the engine (safe from any thread).
+        """
+        self._cached_topology = self.engine.get_topology()
+        logger.info(
+            "Topology cached: %d buses, %d lines, %d generators, %d loads",
+            len(self._cached_topology.buses),
+            len(self._cached_topology.lines),
+            len(self._cached_topology.generators),
+            len(self._cached_topology.loads),
+        )
+
+    def get_cached_topology(self):
+        """Return the cached topology (thread-safe, no engine calls)."""
+        return self._cached_topology
 
     def get_current_state(self) -> Optional[GridState]:
         """

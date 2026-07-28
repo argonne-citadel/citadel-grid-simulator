@@ -5,30 +5,28 @@ Converts GridState objects to Grid-STIX GridTelemetry observables
 and control commands to Grid-STIX ControlActionEvent objects.
 """
 
-from typing import List, Dict, Any, Optional
+import logging
 from datetime import datetime
-import sys
-from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-# Add Grid-STIX library to path
-GRID_STIX_PATH = Path(
-    "/home/bblakely/code/ztcard/ztcard-stack/src/stack/dockerfiles/console/ztcard-grid-stix/python"
-)
-if str(GRID_STIX_PATH) not in sys.path:
-    sys.path.insert(0, str(GRID_STIX_PATH))
-
-from grid_stix.events_observables.GridTelemetry import GridTelemetry
 from grid_stix.events_observables.ControlActionEvent import ControlActionEvent
 
-from ..schemas.state import GridState, BusState, LineState
+# grid-stix is pip-installed via environment.yml — no sys.path hackery
+# needed. The previous code hardcoded a developer-machine path
+# (/home/bblakely/code/...) into sys.path; removed.
+from grid_stix.events_observables.GridTelemetry import GridTelemetry
+
 from ..schemas.commands import (
-    Command,
     BreakerCommand,
+    Command,
     GeneratorCommand,
     LoadCommand,
     StorageCommand,
 )
+from ..schemas.state import BusState, GridState, LineState
 from .annotator import GridSTIXAnnotator
+
+logger = logging.getLogger(__name__)
 
 
 class TelemetryConverter:
@@ -130,9 +128,9 @@ class TelemetryConverter:
             )
 
             return telemetry
-        except Exception as e:
-            print(f"Warning: Failed to create bus telemetry for bus {bus_id}: {e}")
-            return None
+        except Exception:
+            logger.exception("Failed to create bus telemetry for bus %s", bus_id)
+            raise
 
     def _create_line_power_telemetry(
         self, line_id: int, line_state: LineState, timestamp: datetime, power_type: str
@@ -171,9 +169,9 @@ class TelemetryConverter:
             )
 
             return telemetry
-        except Exception as e:
-            print(f"Warning: Failed to create line telemetry for line {line_id}: {e}")
-            return None
+        except Exception:
+            logger.exception("Failed to create line telemetry for line %s", line_id)
+            raise
 
     def convert_command(
         self, command: Command, timestamp: float
@@ -246,9 +244,9 @@ class TelemetryConverter:
             )
 
             return event
-        except Exception as e:
-            print(f"Warning: Failed to convert command to STIX: {e}")
-            return None
+        except Exception:
+            logger.exception("Failed to convert command to STIX")
+            raise
 
     def batch_convert_states(
         self, states: List[GridState], max_telemetry: int = 1000

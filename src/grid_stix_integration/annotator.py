@@ -5,37 +5,34 @@ Annotates grid components with Grid-STIX objects and maintains a registry
 of STIX ID to component ID mappings for cybersecurity analysis.
 """
 
-from typing import Dict, List, Optional, Any
+import logging
 from datetime import datetime
-import sys
-from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-# Add Grid-STIX library to path
-GRID_STIX_PATH = Path(
-    "/home/bblakely/code/ztcard/ztcard-stack/src/stack/dockerfiles/console/ztcard-grid-stix/python"
-)
-if str(GRID_STIX_PATH) not in sys.path:
-    sys.path.insert(0, str(GRID_STIX_PATH))
-
-from grid_stix.components.DistributedEnergyResource import DistributedEnergyResource
-from grid_stix.components.BatteryEnergyStorageSystem import BatteryEnergyStorageSystem
-from grid_stix.components.PhotovoltaicSystem import PhotovoltaicSystem
-from grid_stix.components.WindTurbine import WindTurbine
-from grid_stix.components.SmartMeter import SmartMeter
-from grid_stix.assets.Generator import Generator
-from grid_stix.assets.Transformer import Transformer
 from grid_stix.assets.DistributionLine import DistributionLine
+from grid_stix.assets.Generator import Generator
 from grid_stix.assets.Substation import Substation
+from grid_stix.assets.Transformer import Transformer
+from grid_stix.components.BatteryEnergyStorageSystem import BatteryEnergyStorageSystem
 
+# grid-stix is pip-installed via environment.yml — no sys.path hackery
+# needed. The previous code hardcoded a developer-machine path
+# (/home/bblakely/code/...) into sys.path; that path doesn't exist in
+# containers or on any other host. If the import below fails, install
+# grid-stix in the active environment.
+from grid_stix.components.SmartMeter import SmartMeter
+
+from ..schemas.common import BusID, GeneratorID, LineID, LoadID, StorageID
 from ..schemas.topology import (
-    NetworkTopology,
     BusInfo,
-    LineInfo,
     GeneratorInfo,
+    LineInfo,
     LoadInfo,
+    NetworkTopology,
     StorageInfo,
 )
-from ..schemas.common import BusID, LineID, GeneratorID, LoadID, StorageID
+
+logger = logging.getLogger(__name__)
 
 
 class GridSTIXAnnotator:
@@ -96,9 +93,9 @@ class GridSTIXAnnotator:
             )
 
             self._register_stix_object(f"bus_{bus_id}", stix_obj)
-        except Exception as e:
-            # Log but don't fail - annotation is optional
-            print(f"Warning: Failed to annotate bus {bus_id}: {e}")
+        except Exception:
+            logger.exception("Failed to annotate bus %s", bus_id)
+            raise
 
     def _annotate_line(self, line_id: LineID, line_info: LineInfo) -> None:
         """Annotate a line as a Grid-STIX DistributionLine."""
@@ -114,11 +111,15 @@ class GridSTIXAnnotator:
                 x_operational_status=(
                     "in_service" if line_info.in_service else "out_of_service"
                 ),
+                x_from_bus=f"bus_{line_info.from_bus}",  # Connectivity data for Neo4j
+                x_to_bus=f"bus_{line_info.to_bus}",  # Connectivity data for Neo4j
+                allow_custom=True,  # x_from_bus/x_to_bus not in grid-stix schema yet; tracked in Redmine #1134
             )
 
             self._register_stix_object(f"line_{line_id}", stix_obj)
-        except Exception as e:
-            print(f"Warning: Failed to annotate line {line_id}: {e}")
+        except Exception:
+            logger.exception("Failed to annotate line %s", line_id)
+            raise
 
     def _annotate_generator(self, gen_id: GeneratorID, gen_info: GeneratorInfo) -> None:
         """Annotate a generator as a Grid-STIX Generator."""
@@ -131,11 +132,14 @@ class GridSTIXAnnotator:
                 x_operational_status=(
                     "in_service" if gen_info.in_service else "out_of_service"
                 ),
+                x_bus=f"bus_{gen_info.bus}",  # Connectivity data for Neo4j
+                allow_custom=True,  # x_bus not in grid-stix schema yet; tracked in Redmine #1134
             )
 
             self._register_stix_object(f"gen_{gen_id}", stix_obj)
-        except Exception as e:
-            print(f"Warning: Failed to annotate generator {gen_id}: {e}")
+        except Exception:
+            logger.exception("Failed to annotate generator %s", gen_id)
+            raise
 
     def _annotate_load(self, load_id: LoadID, load_info: LoadInfo) -> None:
         """Annotate a load as a Grid-STIX SmartMeter."""
@@ -146,11 +150,14 @@ class GridSTIXAnnotator:
                 x_operational_status=(
                     "in_service" if load_info.in_service else "out_of_service"
                 ),
+                x_bus=f"bus_{load_info.bus}",  # Connectivity data for Neo4j
+                allow_custom=True,  # x_bus not in grid-stix schema yet; tracked in Redmine #1134
             )
 
             self._register_stix_object(f"load_{load_id}", stix_obj)
-        except Exception as e:
-            print(f"Warning: Failed to annotate load {load_id}: {e}")
+        except Exception:
+            logger.exception("Failed to annotate load %s", load_id)
+            raise
 
     def _annotate_storage(
         self, storage_id: StorageID, storage_info: StorageInfo
@@ -165,11 +172,14 @@ class GridSTIXAnnotator:
                 x_operational_status=(
                     "in_service" if storage_info.in_service else "out_of_service"
                 ),
+                x_bus=f"bus_{storage_info.bus}",  # Connectivity data for Neo4j
+                allow_custom=True,  # x_bus not in grid-stix schema yet; tracked in Redmine #1134
             )
 
             self._register_stix_object(f"storage_{storage_id}", stix_obj)
-        except Exception as e:
-            print(f"Warning: Failed to annotate storage {storage_id}: {e}")
+        except Exception:
+            logger.exception("Failed to annotate storage %s", storage_id)
+            raise
 
     def _register_stix_object(self, component_id: str, stix_obj: Any) -> None:
         """Register a STIX object and maintain bidirectional mapping."""

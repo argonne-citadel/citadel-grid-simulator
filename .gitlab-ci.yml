@@ -23,7 +23,7 @@ workflow:
   before_script:
     - apt-get update 
     - apt-get -y install curl make bzip2
-    - curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj bin/micromamba 
+    - mkdir -p bin && curl -Ls https://github.com/mamba-org/micromamba-releases/releases/latest/download/micromamba-linux-64 -o bin/micromamba && chmod +x bin/micromamba
     - bin/micromamba shell init --shell bash --root-prefix=~/micromamba
     - export MAMBA_EXE="$PWD/bin/micromamba"
     - export MAMBA_ROOT_PREFIX="$HOME/micromamba"

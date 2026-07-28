@@ -68,8 +68,9 @@ class TestModbusServer:
         # Context should be created
         assert context is not None
 
-        # Should have slave context for unit ID 1
-        assert 1 in context
+        # Should be able to retrieve device context for unit ID 1
+        device = context[1]
+        assert device is not None
 
     def test_get_point_mapping(self, simulator):
         """Test getting point mapping information."""

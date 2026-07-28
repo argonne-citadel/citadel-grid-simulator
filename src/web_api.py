@@ -24,7 +24,9 @@ from typing import Any, Dict, Optional
 import networkx as nx
 import numpy as np
 import pandas as pd
-from flask import Flask, jsonify, send_from_directory
+from flask import Flask, Response, jsonify, send_from_directory
+
+from .metrics import get_prometheus_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +42,9 @@ class GridVisualizationAPI:
     def __init__(
         self,
         simulator,
-        host: str = "0.0.0.0",
+        host: str = "0.0.0.0",  # nosec B104 — containerized web API; bind-to-all required for docker port mapping
         port: int = 8080,
+        authorization_wrapper=None,
     ) -> None:
         """
         Initialize visualization API.
@@ -50,10 +53,12 @@ class GridVisualizationAPI:
             simulator: GridSimulator instance
             host: IP address to bind to (default: 0.0.0.0)
             port: TCP port to listen on (default: 8080)
+            authorization_wrapper: Optional AuthorizationWrapper for Zero-Trust
         """
         self.simulator = simulator
         self.host = host
         self.port = port
+        self.auth_wrapper = authorization_wrapper
 
         # Flask app setup
         self.app = Flask(__name__)
@@ -68,15 +73,23 @@ class GridVisualizationAPI:
         # Register routes
         self._register_routes()
 
+        # Register control API blueprint
+        self._register_control_api()
+
         logger.info(f"GridVisualizationAPI initialized on {host}:{port}")
 
-    def _register_routes(self):
+    def _register_routes(self):  # noqa: C901
         """Register Flask routes."""
 
         @self.app.route("/")
         def index():
             """Serve the main visualization page."""
             return send_from_directory("static", "index.html")
+
+        @self.app.route("/control")
+        def control():
+            """Serve the HMI/SCADA control panel."""
+            return send_from_directory("static", "control.html")
 
         @self.app.route("/static/<path:path>")
         def send_static(path):
@@ -94,6 +107,87 @@ class GridVisualizationAPI:
                 logger.error(f"Error generating state data: {e}")
                 return jsonify({"error": str(e)}), 500
 
+        @self.app.route("/reset", methods=["POST"])
+        def reset():
+            """Reset grid engine to initial state with stochastic load variation.
+
+            Delegates to the engine's reset() method, which is engine-agnostic.
+            PandaPowerEngine.reset() requires reset_fn at construction (provided
+            by main.py). OpenDSSEngine.reset() recompiles the circuit and fuzzes
+            loads.  Both engines run a power flow before returning so the state
+            is valid immediately after this call.
+
+            The simulation loop is stopped before resetting and restarted after.
+            OpenDSS uses global C-library state that is not thread-safe — calling
+            reset() while the simulation thread is mid-Solve() causes a crash.
+            Stopping the loop first eliminates the race.
+            """
+            was_running = self.simulator.running
+            if was_running:
+                self.simulator.stop()
+            try:
+                self.simulator.engine.reset()
+                pinned_hour = getattr(self.simulator.engine, "_pinned_hour", None)
+                logger.info("Grid engine reset via /reset (hour=%s)", pinned_hour)
+                return jsonify(
+                    {
+                        "status": "ok",
+                        "message": "Grid reset to initial state",
+                        "simulation_hour": pinned_hour,
+                    }
+                )
+            except Exception as e:
+                logger.error(f"Error resetting grid: {e}")
+                return jsonify({"error": str(e)}), 500
+            finally:
+                if was_running:
+                    self.simulator.start(threaded=True)
+
+        @self.app.route("/topology")
+        def get_topology():
+            """Get static network topology for zone partitioning and graph analysis.
+
+            Returns bus/line/generator/storage connectivity without power-flow
+            results.  Consumers (e.g. data-init) use this to derive zone
+            assignments via BFS without importing any simulator library.
+
+            Response schema:
+              buses:      {bus_id: {bus_type: str}}
+              lines:      {line_id: {from_bus: int, to_bus: int}}
+              generators: {gen_id:  {bus: int}}
+              storage:    {stor_id: {bus: int}}
+            """
+            try:
+                topology = self.simulator.get_cached_topology()
+                if topology is None:
+                    return jsonify({"error": "Topology not cached yet"}), 503
+                return jsonify(
+                    {
+                        "buses": {
+                            str(bus_id): {"bus_type": info.bus_type}
+                            for bus_id, info in topology.buses.items()
+                        },
+                        "lines": {
+                            str(line_id): {
+                                "from_bus": info.from_bus,
+                                "to_bus": info.to_bus,
+                            }
+                            for line_id, info in topology.lines.items()
+                        },
+                        "generators": {
+                            str(gen_id): {"bus": info.bus}
+                            for gen_id, info in topology.generators.items()
+                        },
+                        "storage": {
+                            str(stor_id): {"bus": info.bus}
+                            for stor_id, info in topology.storage.items()
+                        },
+                    }
+                )
+            except Exception as e:
+                logger.error(f"Error generating topology: {e}")
+                return jsonify({"error": str(e)}), 500
+
         @self.app.route("/health")
         def health():
             """Health check endpoint."""
@@ -101,15 +195,39 @@ class GridVisualizationAPI:
                 {"status": "ok", "simulator_running": self.simulator.running}
             )
 
-    def _generate_topology(self) -> Dict[str, Any]:
+        @self.app.route("/metrics")
+        def metrics():
+            """Prometheus metrics endpoint."""
+            metrics_data, content_type = get_prometheus_metrics()
+            return Response(metrics_data, mimetype=content_type)
+
+    def _register_control_api(self):
+        """Register HMI control API blueprint."""
+        try:
+            from .hmi_control_api import HMIControlAPI
+
+            control_api = HMIControlAPI(
+                simulator=self.simulator,
+                authorization_wrapper=self.auth_wrapper,
+            )
+            self.app.register_blueprint(control_api.blueprint)
+            logger.info("HMI Control API registered")
+        except ImportError as e:
+            logger.warning(f"HMI Control API not available: {e}")
+
+    def _generate_topology(self) -> Dict[str, Any]:  # noqa: C901, PLR0915
         """
         Generate topology coordinates using generic engine interface.
 
         Returns:
             Dictionary with x, y coordinates for buses, lines, generators, loads, and storage
         """
-        # Get topology from engine (generic interface)
-        topology = self.simulator.engine.get_topology()
+        # Use cached topology (thread-safe, no engine calls)
+        topology = self.simulator.get_cached_topology()
+        if topology is None:
+            raise RuntimeError(
+                "Topology not cached — call simulator.cache_topology() first"
+            )
 
         # Build graph from topology for layout generation
         G = nx.Graph()
@@ -141,15 +259,90 @@ class GridVisualizationAPI:
         for trafo_id, trafo_info in topology.transformers.items():
             G.add_edge(f"bus_{trafo_info.hv_bus}", f"bus_{trafo_info.lv_bus}")
 
-        # Generate layout using networkx
-        # Use Kamada-Kawai for better layout, with fixed initial positions for determinism
-        try:
-            # Create deterministic initial positions using a seeded spring layout
-            initial_pos = nx.spring_layout(G, seed=42)
-            pos = nx.kamada_kawai_layout(G, pos=initial_pos, scale=100)
-        except:
-            # Fallback to spring layout if Kamada-Kawai fails
-            pos = nx.spring_layout(G, k=2, iterations=50, seed=42, scale=100)
+        # Generate layout — prefer geographic coordinates from the engine
+        # (BusCoords.csv for OpenDSS models like IEEE 8500).  Falls back to
+        # NetworkX computed layout for models without coordinates.
+        bus_coords = getattr(self.simulator.engine, "_bus_coords", {})
+        if len(bus_coords) > len(topology.buses) * 0.3:
+            # Use geographic coordinates — normalize to plot scale
+            xs = [c[0] for c in bus_coords.values()]
+            ys = [c[1] for c in bus_coords.values()]
+            cx, cy = sum(xs) / len(xs), sum(ys) / len(ys)
+            span = max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
+            scale = 200.0 / span
+
+            import random as _rng
+
+            _rng.seed(42)
+
+            # First pass: place buses with known geographic coords
+            pos = {}
+            unplaced_buses = []
+            for bus_id in topology.buses.keys():
+                key = f"bus_{bus_id}"
+                if int(bus_id) in bus_coords:
+                    bx, by = bus_coords[int(bus_id)]
+                    pos[key] = ((bx - cx) * scale, (by - cy) * scale)
+                else:
+                    unplaced_buses.append(key)
+
+            # BFS propagation: place uncoordinated buses near their nearest
+            # coordinated neighbor.  Repeats until all buses are placed or
+            # no progress is made (disconnected components default to 0,0).
+            remaining = set(unplaced_buses)
+            while remaining:
+                placed_this_round = []
+                for key in remaining:
+                    for neighbor in G.neighbors(key):
+                        if neighbor in pos:
+                            nx_, ny_ = pos[neighbor]
+                            pos[key] = (
+                                nx_ + _rng.uniform(-0.3, 0.3),
+                                ny_ + _rng.uniform(-0.3, 0.3),
+                            )
+                            placed_this_round.append(key)
+                            break
+                if not placed_this_round:
+                    # No progress — place remaining at (0,0)
+                    for key in remaining:
+                        pos[key] = (0.0, 0.0)
+                    break
+                remaining -= set(placed_this_round)
+
+            # Place generators, loads, storage near their bus with small offset
+            for node in G.nodes():
+                if node in pos:
+                    continue
+                for neighbor in G.neighbors(node):
+                    if neighbor in pos:
+                        bx, by = pos[neighbor]
+                        pos[node] = (bx + _rng.uniform(-1, 1), by + _rng.uniform(-1, 1))
+                        break
+                else:
+                    pos[node] = (0.0, 0.0)
+
+            logger.info(
+                "Using geographic bus coordinates for layout (%d/%d buses)",
+                len(bus_coords),
+                len(topology.buses),
+            )
+        else:
+            # Computed layout — Kamada-Kawai for small, spring for large
+            try:
+                if G.number_of_nodes() > 500:
+                    pos = nx.spring_layout(G, k=2, iterations=20, seed=42, scale=100)
+                else:
+                    initial_pos = nx.spring_layout(G, seed=42)
+                    pos = nx.kamada_kawai_layout(G, pos=initial_pos, scale=100)
+            except Exception:
+                # Deliberate visualization fallback: kamada_kawai fails on
+                # disconnected graphs; spring_layout always works. Logged at
+                # warning so the fallback isn't silent.
+                logger.warning(
+                    "kamada_kawai_layout failed; falling back to spring_layout",
+                    exc_info=True,
+                )
+                pos = nx.spring_layout(G, k=2, iterations=20, seed=42, scale=100)
 
         # Extract bus coordinates
         bus_coords_x = []
@@ -310,8 +503,65 @@ class GridVisualizationAPI:
                     "hv_kv": trafo_info.hv_voltage_kv,
                     "lv_kv": trafo_info.lv_voltage_kv,
                     "in_service": trafo_info.in_service,
+                    "tap_position": trafo_info.tap_position,
+                    "tap_min": trafo_info.tap_min,
+                    "tap_max": trafo_info.tap_max,
                 }
             )
+
+        # Shunt data (capacitors/reactors placed at bus position with small offset)
+        shunts = []
+        for shunt_id in sorted(topology.shunts.keys()):
+            shunt_info = topology.shunts[shunt_id]
+            bus_id = shunt_info.bus
+
+            bus_idx = sorted(topology.buses.keys()).index(bus_id)
+            shunt_x = bus_coords_x[bus_idx] + 3
+            shunt_y = bus_coords_y[bus_idx] + 3
+
+            shunts.append(
+                {
+                    "id": int(shunt_id),
+                    "name": shunt_info.name,
+                    "bus_id": int(bus_id),
+                    "x": shunt_x,
+                    "y": shunt_y,
+                    "q_mvar": shunt_info.q_mvar,
+                    "p_mw": shunt_info.p_mw,
+                    "in_service": shunt_info.in_service,
+                }
+            )
+
+        # Switch data (placed as short segments between bus and element)
+        switch_coords = []
+        sorted_bus_keys = sorted(topology.buses.keys())
+        for switch_id in sorted(topology.switches.keys()):
+            sw_info = topology.switches[switch_id]
+
+            # Only render bus-to-bus switches (et="b") — line/trafo switches
+            # are implicitly shown by the line/trafo being in/out of service.
+            if sw_info.element_type != "b":
+                continue
+
+            bus_a = sw_info.bus
+            bus_b_id = sw_info.element
+
+            bus_b_key = int(bus_b_id)
+            if bus_a in topology.buses and bus_b_key in topology.buses:
+                a_idx = sorted_bus_keys.index(bus_a)
+                b_idx = sorted_bus_keys.index(bus_b_key)
+                switch_coords.append(
+                    {
+                        "id": int(switch_id),
+                        "name": sw_info.name,
+                        "bus": int(bus_a),
+                        "element": bus_b_id,
+                        "x": [bus_coords_x[a_idx], bus_coords_x[b_idx]],
+                        "y": [bus_coords_y[a_idx], bus_coords_y[b_idx]],
+                        "closed": sw_info.closed,
+                        "switch_type": sw_info.switch_type,
+                    }
+                )
 
         return {
             "buses": {"x": bus_coords_x, "y": bus_coords_y, "metadata": bus_metadata},
@@ -320,9 +570,11 @@ class GridVisualizationAPI:
             "generators": generators,
             "loads": loads,
             "storage": storage_units,
+            "shunts": shunts,
+            "switches": switch_coords,
         }
 
-    def _get_state_data(self) -> Dict[str, Any]:
+    def _get_state_data(self) -> Dict[str, Any]:  # noqa: C901, PLR0915
         """
         Get current grid state with topology.
 
@@ -330,37 +582,31 @@ class GridVisualizationAPI:
             Dictionary with version, topology, and current state
         """
         with self._lock:
-            # Get topology from engine
-            topology = self.simulator.engine.get_topology()
-
-            # Check if topology changed (number of buses/lines)
-            current_topology_hash = (
-                len(topology.buses),
-                len(topology.lines),
-            )
-
+            # Use cached topology (populated by simulator.cache_topology() in
+            # the main thread before the simulation loop starts).  Never call
+            # engine.get_topology() from the Flask thread — OpenDSS global
+            # C-library state is not thread-safe.
             if self._topology_cache is None:
                 self._topology_cache = self._generate_topology()
-                self._cached_topology_hash = current_topology_hash
 
-            elif self._cached_topology_hash != current_topology_hash:
-                # Topology changed, regenerate
-                self._topology_version += 1
-                self._topology_cache = self._generate_topology()
-                self._cached_topology_hash = current_topology_hash
-                logger.info(f"Topology changed, new version: {self._topology_version}")
+            # NetworkTopology object for line/bus iteration in state assembly
+            topology = self.simulator.get_cached_topology()
 
-            # Update dynamic data in cached topology (storage SOC and power)
+            # Update dynamic data in cached topology (generator output, storage SOC/power)
             state = self.simulator.get_current_state()
-            if state and self._topology_cache and "storage" in self._topology_cache:
-                for storage_unit in self._topology_cache["storage"]:
-                    storage_id = storage_unit["id"]
-                    if storage_id in state.storage:
-                        storage_state = state.storage[storage_id]
-                        storage_unit["soc_percent"] = storage_state.soc_percent
-                        storage_unit["p_kw"] = (
-                            storage_state.p_mw * 1000
-                        )  # Convert MW to kW
+            if state and self._topology_cache:
+                if "generators" in self._topology_cache:
+                    for gen_unit in self._topology_cache["generators"]:
+                        gen_id = gen_unit["id"]
+                        if gen_id in state.generators:
+                            gen_unit["p_kw"] = state.generators[gen_id].p_mw * 1000
+                if "storage" in self._topology_cache:
+                    for storage_unit in self._topology_cache["storage"]:
+                        storage_id = storage_unit["id"]
+                        if storage_id in state.storage:
+                            storage_state = state.storage[storage_id]
+                            storage_unit["soc_percent"] = storage_state.soc_percent
+                            storage_unit["p_kw"] = storage_state.p_mw * 1000
 
             if state is None:
                 # No state available yet
@@ -376,43 +622,129 @@ class GridVisualizationAPI:
                     },
                 }
 
-            # Extract bus voltages from GridState
+            # Extract bus voltages and phase angles from GridState
             bus_voltages = []
+            bus_angles = []
             for bus_id in sorted(state.buses.keys()):
                 voltage = state.buses[bus_id].voltage_pu
+                angle = state.buses[bus_id].angle_deg
                 # Handle NaN values
                 if np.isnan(voltage):
                     voltage = 0.0
+                if np.isnan(angle):
+                    angle = 0.0
                 bus_voltages.append(float(voltage))
+                bus_angles.append(float(angle))
 
-            # Extract line status and loading from GridState
+            # Extract line status, loading, and power flows from GridState
             line_status = []
             line_loading = []
+            line_p_mw = []
+            line_q_mvar = []
 
             for line_id in sorted(topology.lines.keys()):
                 # Get status from topology
                 line_info = topology.lines[line_id]
                 line_status.append(line_info.in_service)
 
-                # Get loading from state
+                # Get loading and power from state
                 if line_id in state.lines:
-                    loading = state.lines[line_id].loading_percent
-                    # Handle NaN or missing values
+                    line_state = state.lines[line_id]
+                    loading = line_state.loading_percent
+                    p_from = line_state.p_from_mw
+                    q_from = line_state.q_from_mvar
                     if pd.isna(loading):
                         loading = 0.0
+                    if pd.isna(p_from):
+                        p_from = 0.0
+                    if pd.isna(q_from):
+                        q_from = 0.0
                     line_loading.append(float(loading))
+                    line_p_mw.append(float(p_from))
+                    line_q_mvar.append(float(q_from))
                 else:
                     line_loading.append(0.0)
+                    line_p_mw.append(0.0)
+                    line_q_mvar.append(0.0)
+
+            # Extract generator/DER output power
+            generator_power = []
+            for gen_id in sorted(state.generators.keys()):
+                gen_state = state.generators[gen_id]
+                p_mw = gen_state.p_mw if not np.isnan(gen_state.p_mw) else 0.0
+                q_mvar = gen_state.q_mvar if not np.isnan(gen_state.q_mvar) else 0.0
+                generator_power.append(
+                    {
+                        "id": int(gen_id),
+                        "p_mw": float(p_mw),
+                        "q_mvar": float(q_mvar),
+                    }
+                )
+
+            # Extract load power
+            load_power = []
+            for load_id in sorted(state.loads.keys()):
+                load_state = state.loads[load_id]
+                p_mw = load_state.p_mw if not np.isnan(load_state.p_mw) else 0.0
+                q_mvar = load_state.q_mvar if not np.isnan(load_state.q_mvar) else 0.0
+                load_power.append(
+                    {
+                        "id": int(load_id),
+                        "p_mw": float(p_mw),
+                        "q_mvar": float(q_mvar),
+                    }
+                )
+
+            # System totals (from GridState which computes them properly)
+            total_generation_mw = (
+                float(state.total_generation_mw)
+                if state.total_generation_mw is not None
+                and not np.isnan(state.total_generation_mw)
+                else 0.0
+            )
+            total_load_mw = (
+                float(state.total_load_mw)
+                if state.total_load_mw is not None and not np.isnan(state.total_load_mw)
+                else 0.0
+            )
+            total_losses_mw = (
+                float(state.total_losses_mw)
+                if state.total_losses_mw is not None
+                and not np.isnan(state.total_losses_mw)
+                else 0.0
+            )
+
+            # Frequency from network (pandapower nominal)
+            frequency_hz = float(
+                topology.frequency_hz if topology.frequency_hz else 60.0
+            )
 
             return {
                 "ver": self._topology_version,
                 "topology": self._topology_cache,
                 "state": {
                     "bus_voltage": bus_voltages,
+                    "bus_angle": bus_angles,
                     "line_status": line_status,
                     "line_loading": line_loading,
-                    "converged": state.converged,
+                    "line_p_mw": line_p_mw,
+                    "line_q_mvar": line_q_mvar,
+                    "generator_power": generator_power,
+                    "load_power": load_power,
+                    "total_generation_mw": total_generation_mw,
+                    "total_load_mw": total_load_mw,
+                    "total_losses_mw": total_losses_mw,
+                    "ext_grid_import_mw": float(state.ext_grid_import_mw),
+                    "frequency_hz": frequency_hz,
+                    "converged": self.simulator.last_step_converged,
                     "sim_time": self.simulator.current_time,
+                    "simulation_hour": getattr(
+                        self.simulator.engine, "_pinned_hour", None
+                    ),
+                    # Non-zero means some bus results were NaN/inf-substituted.
+                    # Distinct from converged=False (global failure); this is
+                    # bus-level partial non-convergence granularity.
+                    "nan_bus_count": state.nan_bus_count,
                 },
             }
 

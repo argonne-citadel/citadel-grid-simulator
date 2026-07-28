@@ -10,8 +10,8 @@ standardized representations of grid assets, telemetry, events, and relationship
 """
 
 from .annotator import GridSTIXAnnotator
-from .telemetry import TelemetryConverter
 from .exporter import STIXExporter
+from .telemetry import TelemetryConverter
 
 __all__ = [
     "GridSTIXAnnotator",

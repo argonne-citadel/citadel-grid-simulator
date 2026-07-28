@@ -322,7 +322,8 @@ class TestStorageControl:
 
         engine.set_storage_power(0, p_mw=0.02)
 
-        assert network_with_der.storage.at[0, "p_mw"] == 0.02
+        # set_storage_power negates: caller positive (discharge) → pandapower negative
+        assert network_with_der.storage.at[0, "p_mw"] == -0.02
 
     def test_storage_command(self, network_with_der):
         """Test storage control via command."""
@@ -331,7 +332,8 @@ class TestStorageControl:
         cmd = StorageCommand(storage_id=0, p_mw=-0.01)  # Charging
         engine.execute_command(cmd)
 
-        assert network_with_der.storage.at[0, "p_mw"] == -0.01
+        # Caller negative (charge) → pandapower positive (consuming)
+        assert network_with_der.storage.at[0, "p_mw"] == 0.01
 
 
 class TestDataConversion:
@@ -420,4 +422,5 @@ class TestIntegration:
         # Verify all changes applied
         assert network_with_der.sgen.at[0, "p_mw"] == 0.05
         assert network_with_der.load.at[0, "p_mw"] == 0.07
-        assert network_with_der.storage.at[0, "p_mw"] == 0.01
+        # Caller positive (discharge) → pandapower negative (injection)
+        assert network_with_der.storage.at[0, "p_mw"] == -0.01

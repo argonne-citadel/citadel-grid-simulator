@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grid Simulator - HMI/SCADA Control Panel</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/control.css">
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <script src="/static/app.js" defer></script>
+    <script src="/static/control.js" defer></script>
+</head>
+<body>
+    <div id="header">
+        <h1>Grid Simulator - HMI/SCADA Control Panel</h1>
+        <div id="status">
+            <div class="status-item">
+                <span class="status-dot" id="status-dot"></span>
+                <span id="status-text">Connecting...</span>
+            </div>
+            <div class="status-item">
+                <span class="metric">Time:</span>
+                <span id="sim-time">--</span>
+            </div>
+            <div class="status-item">
+                <span class="metric">User:</span>
+                <span id="current-user">operator_alice</span>
+            </div>
+            <div class="status-item">
+                <span class="metric">Role:</span>
+                <select id="user-role">
+                    <option value="operator">Operator</option>
+                    <option value="engineer">Engineer</option>
+                    <option value="admin">Admin</option>
+                    <option value="viewer">Viewer</option>
+                </select>
+            </div>
+        </div>
+    </div>
+
+    <div id="main-container">
+        <!-- Left panel: Grid visualization -->
+        <div id="plot-container">
+            <div id="plotly-chart"></div>
+        </div>
+
+        <!-- Right panel: Control operations -->
+        <div id="control-panel">
+            <h2>Control Operations</h2>
+            
+            <!-- Authorization status -->
+            <div id="auth-status" class="panel-section">
+                <h3>Last Authorization</h3>
+                <div class="auth-result" id="auth-result">
+                    <div class="auth-field">
+                        <span class="label">Decision:</span>
+                        <span id="auth-decision" class="value">--</span>
+                    </div>
+                    <div class="auth-field">
+                        <span class="label">Latency:</span>
+                        <span id="auth-latency" class="value">--</span>
+                    </div>
+                    <div class="auth-field">
+                        <span class="label">Reason:</span>
+                        <span id="auth-reason" class="value">--</span>
+                    </div>
+                    <div class="auth-field">
+                        <span class="label">Layer:</span>
+                        <span id="auth-layer" class="value">--</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Read operations -->
+            <div id="read-operations" class="panel-section">
+                <h3>Read Operations</h3>
+                <button id="btn-read-measurements" class="control-btn read-btn">
+                    📊 Read All Measurements
+                </button>
+                <div id="measurements-result" class="operation-result"></div>
+            </div>
+
+            <!-- Breaker control -->
+            <div id="breaker-control" class="panel-section">
+                <h3>Breaker Control</h3>
+                <div class="control-group">
+                    <label for="breaker-id">Breaker ID:</label>
+                    <input type="number" id="breaker-id" value="0" min="0">
+                </div>
+                <div class="control-buttons">
+                    <button id="btn-breaker-open" class="control-btn control-btn-danger">
+                        ⚠️ Open Breaker
+                    </button>
+                    <button id="btn-breaker-close" class="control-btn control-btn-success">
+                        ✓ Close Breaker
+                    </button>
+                </div>
+                <div id="breaker-result" class="operation-result"></div>
+            </div>
+
+            <!-- Generator control -->
+            <div id="generator-control" class="panel-section">
+                <h3>Generator Control</h3>
+                <div class="control-group">
+                    <label for="gen-id">Generator ID:</label>
+                    <input type="number" id="gen-id" value="0" min="0">
+                </div>
+                <div class="control-group">
+                    <label for="gen-setpoint">Setpoint (kW):</label>
+                    <input type="number" id="gen-setpoint" value="100" step="10">
+                </div>
+                <button id="btn-gen-setpoint" class="control-btn">
+                    ⚡ Set Generator Setpoint
+                </button>
+                <div id="gen-result" class="operation-result"></div>
+            </div>
+
+            <!-- Operation log -->
+            <div id="operation-log" class="panel-section">
+                <h3>Operation Log</h3>
+                <div id="log-entries" class="log-container"></div>
+                <button id="btn-clear-log" class="control-btn">Clear Log</button>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
