@@ -88,8 +88,6 @@ New Load.S741c Bus1=741.3.1 Phases=1 Conn=Delta Model=4 kV= 4.800 kW= 42.0 kVAR=
 New Load.S742a Bus1=742.1.2 Phases=1 Conn=Delta Model=2 kV= 4.800 kW= 8.0 kVAR= 4.0
 New Load.S742b Bus1=742.2.3 Phases=1 Conn=Delta Model=2 kV= 4.800 kW= 85.0 kVAR= 40.0
 New Load.S744a Bus1=744.1.2 Phases=1 Conn=Delta Model=1 kV= 4.800 kW= 42.0 kVAR= 21.0
-Set VoltageBases = "230,4.8,0.48"
-CalcVoltageBases
 !!BusCoords IEEE37_BusXY.csv
 !!!!Redirect pvsystem.dss
 / P-T curve is per unit of rated Pmpp vs temperature // This one is for a Pmpp stated at 25 deg 
@@ -109,8 +107,17 @@ New Transformer.pv_up phases=3 Xhl=5.75
 New monitor.pv_power element=transformer.pv_up terminal=1 mode=1 ppolar=no
 New monitor.pv_voltage element=transformer.pv_up terminal=2 mode=0
 
+! pv_up1..5's primary winding (wdg=1) was rated kV=2.4, but each taps a
+! single node (e.g. 701.2) of this 4.8 kV delta feeder, whose actual
+! line-to-neutral nominal is 4.8/sqrt(3) = 2.771281 kV, not 2.4. The 2.4
+! kV nameplate put the secondary ~1.155x above the PVSystem's own 0.24 kV
+! rating (264-294 V measured at hour 12) -- above OpenDSS's default
+! Vmaxpu=1.1, where the PVSystem model switches to constant-impedance and
+! %Pmpp curtailment stops tracking nameplate percentage correctly (PV2-5
+! measured +18-20% over 0.5*Pmpp at a 50% setpoint before this fix).
+! Corrected to the feeder's actual LN nominal; kVA, Pmpp and names unchanged.
 New Transformer.pv_up1 phases=1 Xhl=5.75
-~ wdg=1 bus=701.2 kV=2.4 kVA=2500 //conn=wye
+~ wdg=1 bus=701.2 kV=2.771281 kVA=2500 //conn=wye
 ~ wdg=2 bus=trafo_pv1 kV=0.24 kVA=1000 //conn=wye
   
 // pv definition 
@@ -119,7 +126,7 @@ New PVSystem.PV1 phases=1 bus1=trafo_pv1 kV=0.24  kVA=600  irrad=0.98  Pmpp=250 
 
 
 New Transformer.pv_up2 phases=1 Xhl=5.75
-~ wdg=1 bus=714.1 kV=2.4 kVA=2500 //conn=wye
+~ wdg=1 bus=714.1 kV=2.771281 kVA=2500 //conn=wye
 ~ wdg=2 bus=trafo_pv2 kV=0.24 kVA=1000 //conn=wye
   
 // pv definition 
@@ -129,7 +136,7 @@ New PVSystem.PV2 phases=1 bus1=trafo_pv2 kV=0.24  kVA=600  irrad=0.98  Pmpp=1000
 
 
 New Transformer.pv_up4 phases=1 Xhl=5.75
-~ wdg=1 bus=702.1 kV=2.4 kVA=2500 //conn=wye
+~ wdg=1 bus=702.1 kV=2.771281 kVA=2500 //conn=wye
 ~ wdg=2 bus=trafo_pv4 kV=0.24 kVA=1000 //conn=wye
   
 // pv definition 
@@ -139,7 +146,7 @@ New PVSystem.PV4 phases=1 bus1=trafo_pv4 kV=0.24  kVA=600  irrad=0.98  Pmpp=250 
 
 
 New Transformer.pv_up3 phases=1 Xhl=5.75
-~ wdg=1 bus=731.1 kV=2.4 kVA=2500 //conn=wye
+~ wdg=1 bus=731.1 kV=2.771281 kVA=2500 //conn=wye
 ~ wdg=2 bus=trafo_pv3 kV=0.24 kVA=1000 //conn=wye
   
 // pv definition 
@@ -147,11 +154,30 @@ New PVSystem.PV3 phases=1 bus1=trafo_pv3 kV=0.24  kVA=600  irrad=0.98  Pmpp=250 
 
 
 New Transformer.pv_up5 phases=1 Xhl=5.75
-~ wdg=1 bus=741.3 kV=2.4 kVA=2500 //conn=wye
+~ wdg=1 bus=741.3 kV=2.771281 kVA=2500 //conn=wye
 ~ wdg=2 bus=trafo_pv5 kV=0.24 kVA=1000 //conn=wye
   
 // pv definition 
-New PVSystem.PV5 phases=1 bus1=trafo_pv5 kV=0.24  kVA=600  irrad=0.98  Pmpp=250   temperature=25 PF=1  effcurve=Myeff  P-TCurve=MyPvsT  Daily=MyIrrad  TDaily=MyTemp  
+New PVSystem.PV5 phases=1 bus1=trafo_pv5 kV=0.24  kVA=600  irrad=0.98  Pmpp=250   temperature=25 PF=1  effcurve=Myeff  P-TCurve=MyPvsT  Daily=MyIrrad  TDaily=MyTemp
+
+! Voltage bases, moved to after every PV secondary bus is declared above:
+! CalcVoltageBases can only assign a base to a bus that already exists, so
+! the original call (immediately after the feeder's spot loads, before any
+! PV transformer existed) left every trafo_pv* bus with kVBase=0 and
+! puVmagAngle() reporting raw volts (~260-294) instead of per-unit --
+! measured ~280 pu on this feeder before this fix. Moving the call here is
+! the actual fix for trafo_pv1..5: once CalcVoltageBases runs after their
+! transformers exist, their corrected primary/secondary winding ratio gives
+! kVBase=0.24. Before the primary rating correction, propagation instead
+! gave 0.48/sqrt(3)=0.277128, concealing the ~15.5% physical overvoltage
+! relative to the PVSystem's own 0.24 kV rating. The 0.415692 LL-equivalent
+! entry explicitly records the 0.24 kV LN secondary nominal; this feeder's
+! propagated bases are identical with or without that entry. IEEE-37
+! is a 3-wire delta 4.8 kV feeder, so primary node-to-ground pu around
+! 0.906 is pre-existing and expected -- not something this change touches
+! or should "fix".
+Set VoltageBases = "230,4.8,0.48,0.415692"
+CalcVoltageBases
 
 Set markPV=yes
 Set PVmarkersize=3

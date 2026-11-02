@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "citadel-simulator"
-version = "1.1.2"
+version = "1.2.0"
 description = "CITADEL Critical Infrastructure Simulator"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -40,7 +40,12 @@ dependencies = [
     "pandapower~=3.2.0",
     "prometheus-client~=0.23.1",
     "pydantic~=2.12.0",
-    "pymodbus~=3.12.0",
+    # Exact-pinned: pymodbus's API moves within patch releases. 3.14 replaced
+    # the datastore with SimData/SimDevice/SimCore, which silently disables an
+    # overridden data block rather than raising. tests/stack/
+    # test_pymodbus_signature_contract_unit.py freezes the surface we use.
+    # Keep in sync with environment.yml.
+    "pymodbus==3.15.0",
     "python-dotenv~=1.2.0",
     "structlog~=25.5.0",
     "numba~=0.64.0",
@@ -107,7 +112,12 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --cov=citadel_simulator --cov-report=term-missing"
+# Carried over from the former pytest.ini, which took precedence over this
+# block and is now deleted. pythonpath puts the repository root on sys.path
+# so `src.*` imports resolve when pytest is invoked directly.
+addopts = "-v --strict-markers --tb=short --disable-warnings"
+pythonpath = ["."]
+markers = ["unit: isolated checks that do not require running services"]
 
 [tool.mypy]
 python_version = "3.12"

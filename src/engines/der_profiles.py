@@ -17,9 +17,16 @@ Design decisions:
       (data center / smelter). All are [0, 1] multipliers on base load values.
     • Gaussian noise is added each step. Historical irradiance/SCADA data can
       replace the base profiles later by subclassing or passing custom lists.
-    • Simulated time advances STEP_MINUTES per step (default 1 min, matching the
-      UI clock compression SIM_TIME_SCALE=60 in app.js). reset() restores the
-      initial datetime so every attack run starts at the same operating point.
+    • Load profiles carry a WEEKDAY/WEEKEND term as well as the diurnal one.
+      Industrial drops to two thirds and residential flattens toward its daily
+      minimum; flat (data center / smelter) is 24/7 by definition and does not
+      move. Values reused from timeseries/load_profiles.py rather than invented
+      — see _WEEKEND_* below.
+    • Simulated time comes from the SUBSTRATE'S clock when one is available
+      (sim_time.get_anchor()), and only falls back to stepping STEP_MINUTES per
+      solve when running standalone. Those two rates differ by 48x under the
+      substrate's SIM_RATE=2880, which is why the fallback is not the default —
+      see the `anchor` argument and sim_time's module docstring.
 """
 
 import math
@@ -28,14 +35,25 @@ from typing import Optional
 
 import numpy as np
 
+from ..sim_time import ClockAnchor, compute_sim_now
+
 # Default start: 08:00 Jan 1 2024. At this hour MyIrrad=0.3, giving realistic
 # morning generation at the start of each attack run. Configurable at construction.
 DEFAULT_START_DT: datetime = datetime(2024, 1, 1, 8, 0, 0)
 
-# Simulated minutes advanced per step.  Default 1 min/step matches the UI
-# clock compression (SIM_TIME_SCALE=60 in app.js).  A 30-minute real-time
-# session covers ~30 hours of simulated operations.
+# Simulated minutes advanced per step, used ONLY when no substrate sim-clock
+# anchor is available (standalone / UI / demo). 1 min/step matches the UI clock
+# compression (SIM_TIME_SCALE=60 in app.js).
+#
+# Not used under the substrate: SIM_RATE there is 2880, so stepping at 60x
+# would leave the grid 48x behind the clock every event is stamped with.
 STEP_MINUTES: int = 1
+
+# Weekend terms. Both reused from timeseries/load_profiles.py so this repo's
+# two profile generators cannot disagree about what a weekend does; see
+# _weekend_industrial / _weekend_residential for the derivations.
+_WEEKEND_INDUSTRIAL_SCALE: float = 0.6 / 0.9
+_WEEKEND_RESIDENTIAL_BLEND: float = 0.9
 
 # Solar base profile: IEEE37Bus_PV.dss MyIrrad loadshape, index = hour (0–23).
 # Peak at solar noon (hours 12–13 = 1.0). Zero outside daylight hours.
@@ -209,20 +227,45 @@ class StochasticDERProfile:
         solar_sigma: float = 0.05,
         wind_sigma: float = 0.12,
         seed: Optional[int] = None,
+        anchor: Optional[ClockAnchor] = None,
     ) -> None:
         self._start_dt = start_dt
         self._current_dt = start_dt
         self._solar_sigma = solar_sigma
         self._wind_sigma = wind_sigma
         self._rng = np.random.default_rng(seed)
+        # Injected rather than fetched here so tests can pin an anchor without
+        # HTTP, and so the caller decides whether this process participates in
+        # the substrate's clock at all.
+        self._anchor = anchor
+
+    @property
+    def anchored(self) -> bool:
+        """True when simulated time comes from the substrate's shared clock."""
+        return self._anchor is not None
 
     @property
     def current_dt(self) -> datetime:
-        """Current simulated datetime."""
+        """Current simulated datetime.
+
+        Derived from the substrate anchor when there is one, so the grid's
+        operating point and the sim_timestamp on every emitted event agree.
+        Falls back to the locally stepped clock only when running standalone.
+        """
+        if self._anchor is not None:
+            return compute_sim_now(self._anchor)
         return self._current_dt
 
     def advance(self) -> None:
-        """Advance simulated time by one step (STEP_MINUTES minutes)."""
+        """Advance the local clock one step; a no-op when anchored.
+
+        Anchored time is a function of wall-clock now, so there is nothing to
+        increment. Kept callable either way so the engine's solve loop does
+        not need to branch — and deliberately NOT raising, because the caller
+        advancing per solve is correct behaviour in standalone mode.
+        """
+        if self._anchor is not None:
+            return
         self._current_dt += timedelta(minutes=STEP_MINUTES)
 
     def reset(self, start_dt: Optional[datetime] = None) -> None:
@@ -239,7 +282,7 @@ class StochasticDERProfile:
         Linearly interpolates the hourly base profile for sub-hour
         resolution, then adds Gaussian noise clamped to [0, 1].
         """
-        base = _interpolate_hourly(self._current_dt, _SOLAR_BASE)
+        base = _interpolate_hourly(self.current_dt, _SOLAR_BASE)
         return float(
             max(0.0, min(1.0, base + self._rng.normal(0.0, self._solar_sigma)))
         )
@@ -250,22 +293,29 @@ class StochasticDERProfile:
         Linearly interpolates the hourly base profile for sub-hour
         resolution, then adds Gaussian noise clamped to [0, 1].
         """
-        base = _interpolate_hourly(self._current_dt, _WIND_BASE)
+        base = _interpolate_hourly(self.current_dt, _WIND_BASE)
         return float(max(0.0, min(1.0, base + self._rng.normal(0.0, self._wind_sigma))))
 
     def industrial_load_factor(self) -> float:
-        """Industrial load multiplier [0, 1] — 3-shift diurnal pattern."""
-        base = _interpolate_hourly(self._current_dt, _INDUSTRIAL_LOAD_BASE)
+        """Industrial load multiplier [0, 1] — 3-shift diurnal, reduced at weekends."""
+        now = self.current_dt
+        base = _interpolate_hourly(now, _INDUSTRIAL_LOAD_BASE)
+        if is_weekend(now):
+            base = _weekend_industrial(base)
         return float(max(0.0, min(1.0, base + self._rng.normal(0.0, 0.02))))
 
     def residential_load_factor(self) -> float:
-        """Residential load multiplier [0, 1] — morning/evening peak pattern."""
-        base = _interpolate_hourly(self._current_dt, _RESIDENTIAL_LOAD_BASE)
+        """Residential load multiplier [0, 1] — peaks on weekdays, flatter at weekends."""
+        now = self.current_dt
+        base = _interpolate_hourly(now, _RESIDENTIAL_LOAD_BASE)
+        if is_weekend(now):
+            base = _weekend_residential(base)
         return float(max(0.0, min(1.0, base + self._rng.normal(0.0, 0.03))))
 
     def flat_load_factor(self) -> float:
         """Flat load multiplier [0, 1] — nearly constant (data center/smelter)."""
-        base = _interpolate_hourly(self._current_dt, _FLAT_LOAD_BASE)
+        # No weekend term: a data center / smelter runs 24/7 by definition.
+        base = _interpolate_hourly(self.current_dt, _FLAT_LOAD_BASE)
         return float(max(0.0, min(1.0, base + self._rng.normal(0.0, 0.01))))
 
 
@@ -276,3 +326,40 @@ def _interpolate_hourly(dt: datetime, hourly_profile: list[float]) -> float:
     v0 = hourly_profile[h % 24]
     v1 = hourly_profile[(h + 1) % 24]
     return v0 + frac * (v1 - v0)
+
+
+def is_weekend(dt: datetime) -> bool:
+    """Saturday or Sunday. Public so tests can state the phase explicitly."""
+    return dt.weekday() >= 5
+
+
+def _weekend_industrial(factor: float) -> float:
+    """Industrial weekend output as a fraction of the weekday shape.
+
+    Derivation: timeseries/load_profiles.py's commercial generator runs
+    industrial sites at 0.9 x peak on weekdays and 0.6 x peak at weekends, so
+    the weekend/weekday ratio is 0.6/0.9 = 2/3. Reused rather than re-chosen
+    so the two profile generators in this repo cannot disagree about what a
+    weekend does.
+    """
+    return factor * _WEEKEND_INDUSTRIAL_SCALE
+
+
+def _weekend_residential(factor: float) -> float:
+    """Residential weekends are flatter, not simply lower.
+
+    Derivation: the same generator's residential weekend adjustment,
+    `base * 0.9 + base_load * 0.1` — a 10% pull toward the overnight minimum,
+    which compresses the morning and evening peaks while leaving the trough
+    almost unchanged.
+
+    KNOWN LIMITATION: this flattens the curve but does not SHIFT it. Real
+    residential weekends also push the morning ramp roughly two hours later.
+    Modelling that means new shapes rather than reused ones, so it is left
+    out deliberately rather than guessed at; the substrate is easier than
+    reality on this axis and timing-axis results are an upper bound.
+    """
+    trough = min(_RESIDENTIAL_LOAD_BASE)
+    return factor * _WEEKEND_RESIDENTIAL_BLEND + trough * (
+        1.0 - _WEEKEND_RESIDENTIAL_BLEND
+    )

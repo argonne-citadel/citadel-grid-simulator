@@ -9,14 +9,14 @@
 *.txt
 *.zip
 .DS_Store
-.claude
+.claude/*
+!.claude/agents/
 .clinerules
 .coverage
 .env
 .idea
 .mypy_cache
 .pytest_cache
-CLAUDE.md
 __pycache__
 build/
 coverage.json
@@ -30,3 +30,13 @@ package/
 settingslocal.py
 tfstate.json
 venv
+# Docker-provisioned feeder datasets. ~14 MB of upstream IEEE test-case data
+# fetched into the image at build time, never committed -- CI checkouts do not
+# have them, which is why tests must load examples/IEEE37Bus_PV.dss instead.
+# Ignored because they are DATA, not code: left untracked they surface as `??`
+# in `git status`, and the parent's SLURM clean-tree guard
+# (scripts/local-slurm/_require_clean_tree.sh, Redmine #1254) watches
+# `dockerfiles` as a result path -- so every job submission on a machine that
+# has run the stack was refused for a tree that was not actually dirty.
+examples/ieee123/
+examples/ieee8500/

@@ -18,6 +18,7 @@ from .common import (
     PowerMVAr,
     PowerMW,
     StorageID,
+    TransformerID,
     VoltagePU,
 )
 
@@ -61,6 +62,35 @@ class LineState(BaseModel):
 
 
 # ============================================================================
+# Transformer State
+# ============================================================================
+
+
+class TransformerState(BaseModel):
+    """Current state of a transformer.
+
+    Mirrors LineState's power/loading shape (minus current_ka, which has no
+    transformer-side equivalent here). Covers plain transformers only —
+    voltage regulators report tap position and voltage setpoint instead,
+    read directly from the engine rather than through GridState (see
+    modbus_server.py's regulator_to_hr_index handling).
+    """
+
+    transformer_id: TransformerID
+
+    p_mw: PowerMW = Field(description="Active power through the transformer in MW")
+    q_mvar: PowerMVAr = Field(
+        description="Reactive power through the transformer in MVAr"
+    )
+
+    loading_percent: float = Field(
+        ge=0, description="Loading as % of rated kVA: |S| / kVA_rated * 100"
+    )
+
+    timestamp: datetime = Field(description="State timestamp")
+
+
+# ============================================================================
 # Generator State
 # ============================================================================
 
@@ -77,6 +107,9 @@ class GeneratorState(BaseModel):
     # Voltage (for PV buses)
     voltage_pu: Optional[VoltagePU] = Field(
         None, description="Terminal voltage in per-unit"
+    )
+    nameplate_kw: Optional[float] = Field(
+        None, gt=0, description="Live active-power nameplate in kW"
     )
 
     timestamp: datetime = Field(description="State timestamp")
@@ -132,6 +165,14 @@ class GridState(BaseModel):
     # Component states
     buses: Dict[BusID, BusState] = Field(description="All bus states")
     lines: Dict[LineID, LineState] = Field(description="All line states")
+    transformers: Dict[TransformerID, TransformerState] = Field(
+        default_factory=dict,
+        description=(
+            "Plain-transformer states (power, loading). Default empty since "
+            "not every engine populates it — see PandaPowerEngine, which "
+            "does not yet read transformer loading."
+        ),
+    )
     generators: Dict[GeneratorID, GeneratorState] = Field(
         description="All generator states"
     )

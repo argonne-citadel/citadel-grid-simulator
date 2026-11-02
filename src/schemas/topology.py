@@ -261,6 +261,16 @@ class NetworkTopology(BaseModel, frozen=True):
     transformers: Dict[TransformerID, TransformerInfo] = Field(
         default_factory=dict, description="All transformers in the network"
     )
+    regulators: Dict[TransformerID, TransformerInfo] = Field(
+        default_factory=dict,
+        description=(
+            "Tap-controlled voltage regulators, keyed in their own ID "
+            "space (not a subset of `transformers`). A regulator is a "
+            "transformer with a RegControl attached; engines that "
+            "identify one relabel it out of `transformers` into this "
+            "dict rather than listing it in both."
+        ),
+    )
     generators: Dict[GeneratorID, GeneratorInfo] = Field(
         description="All generators in the network"
     )

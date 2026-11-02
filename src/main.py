@@ -14,7 +14,8 @@ from .engines.base import PowerSystemEngine
 from .models import BaranWu33Model
 from .models.factory import create_simulation
 from .schemas.topology import NetworkTopology
-from .simulator import GridSimulator
+from .sim_time import get_anchor
+from .simulator import MAX_CONSECUTIVE_FAILED_STEPS, GridSimulator, SimulatorHalted
 
 # Configure logging
 logging.basicConfig(
@@ -123,13 +124,27 @@ async def run_with_protocols(  # noqa: C901, PLR0915
 
         # Add callback to update Modbus server with each simulation step
         if modbus:
+            modbus_failures = 0
 
             def update_modbus_callback(state: Any) -> None:
-                """Update Modbus registers with latest grid state."""
+                """Update Modbus registers with latest grid state.
+
+                Halts the simulator after MAX_CONSECUTIVE_FAILED_STEPS
+                consecutive failures so frozen registers surface in /health.
+                """
+                nonlocal modbus_failures
                 try:
                     modbus.update_measurements()
                 except Exception as e:
                     logger.error(f"Error updating Modbus server: {e}")
+                    modbus_failures += 1
+                    if modbus_failures >= MAX_CONSECUTIVE_FAILED_STEPS:
+                        simulator.halt(
+                            f"{modbus_failures} consecutive Modbus update "
+                            f"failures; last error: {e}"
+                        )
+                else:
+                    modbus_failures = 0
 
             simulator.add_state_callback(update_modbus_callback)
             logger.info("Modbus server will be updated with each simulation step")
@@ -150,10 +165,14 @@ async def run_with_protocols(  # noqa: C901, PLR0915
         logger.info("Press Ctrl+C to stop")
         logger.info("-" * 80)
 
-        # Keep running until interrupted
-        # Don't await modbus_task - let it run in background
-        # Just wait indefinitely to keep the event loop alive
-        await asyncio.Event().wait()
+        # Keep running until interrupted or the simulator halts. A halt must
+        # end the process: under `restart: unless-stopped` Docker restarts
+        # it, and the orchestrator fails the cell on any in-window restart.
+        # A halted simulator left serving /health and stale Modbus registers
+        # froze IEEE-123 telemetry for 20 sim-days without failing anything.
+        while simulator.halted_reason is None:
+            await asyncio.sleep(1.0)
+        raise SimulatorHalted(simulator.halted_reason)
 
     except asyncio.CancelledError:
         logger.info("Protocol servers cancelled")
@@ -311,6 +330,13 @@ def export_topology_from_schema(topology: NetworkTopology) -> None:
     Args:
         topology: Topology object from engine.get_topology()
     """
+    # Local import, matching run_with_protocols()'s deferral of
+    # protocols.modbus_server: this function runs in every mode (not only
+    # "scada"), and importing pymodbus-backed modules there unconditionally
+    # would tie an export-only code path to a protocol dependency it does
+    # not otherwise need.
+    from .protocols.modbus_server import build_transformer_hr_index_to_name
+
     try:
         # Create shared data directory
         shared_dir = Path("/shared")
@@ -320,6 +346,7 @@ def export_topology_from_schema(topology: NetworkTopology) -> None:
             "buses": [],
             "lines": [],
             "transformers": [],
+            "regulators": [],
             "metadata": {
                 "network_name": topology.name,
                 "base_mva": topology.base_mva,
@@ -375,6 +402,28 @@ def export_topology_from_schema(topology: NetworkTopology) -> None:
                 }
             )
 
+        # Export voltage regulators — same shape as transformers plus live
+        # tap fields, sourced from topology.regulators (a separate ID space
+        # from topology.transformers; see NetworkTopology.regulators).
+        for reg in topology.regulators.values():
+            topology_data["regulators"].append(
+                {
+                    "index": int(reg.transformer_id),
+                    "name": reg.name,
+                    "hv_bus": int(reg.hv_bus),
+                    "lv_bus": int(reg.lv_bus),
+                    "sn_mva": reg.rated_power_mva,
+                    "vn_hv_kv": reg.hv_voltage_kv,
+                    "vn_lv_kv": reg.lv_voltage_kv,
+                    "in_service": True,
+                    "vk_percent": reg.reactance_percent,
+                    "vkr_percent": reg.resistance_percent,
+                    "tap_position": reg.tap_position,
+                    "tap_min": reg.tap_min,
+                    "tap_max": reg.tap_max,
+                }
+            )
+
         # Export loads
         topology_data["loads"] = []
         for load in topology.loads.values():
@@ -417,6 +466,17 @@ def export_topology_from_schema(topology: NetworkTopology) -> None:
                     "in_service": stor.in_service,
                 }
             )
+
+        # Instrumented-transformer register point list (Redmine #1303):
+        # HR 8000+ is dense only over the SCADA-instrumented transformer
+        # subset (see build_transformer_hr_index_to_name's docstring), so
+        # the MTU cannot derive it from the "transformers" list above —
+        # that list is topology-wide and would be the wrong bound. JSON
+        # object keys must be strings; the MTU casts them back to int.
+        topology_data["transformer_hr_index_to_name"] = {
+            str(idx): name
+            for idx, name in build_transformer_hr_index_to_name(topology).items()
+        }
 
         # Write to shared file
         topology_file = shared_dir / "grid_topology.json"
@@ -496,7 +556,23 @@ def create_engine(
         # Stochastic DER profile: quasi-static time-series PV and wind output.
         # Solar base = IEEE37Bus_PV.dss MyIrrad loadshape; wind = diurnal profile.
         # Default start 08:00 Jan 1 2024 (irrad=0.3, non-zero morning generation).
-        der_profile = StochasticDERProfile()
+        #
+        # Anchored to the substrate's sim-clock when SIM_CLOCK_URL is set, so
+        # the grid's operating point and the sim_timestamp stamped on every
+        # emitted event refer to the same instant. Unset (standalone / UI /
+        # demo) keeps the local 1-minute-per-solve clock. get_anchor() raises
+        # if the URL is set but unreachable — a substrate run whose grid
+        # silently kept a private 48x-slow clock is the failure being closed.
+        anchor = get_anchor()
+        der_profile = StochasticDERProfile(anchor=anchor)
+        if anchor is None:
+            logger.info("No SIM_CLOCK_URL: DER profile using local stepped clock")
+        else:
+            logger.info(
+                "DER profile anchored to sim-clock (sim_rate=%s, epoch=%s)",
+                anchor.sim_rate,
+                anchor.sim_epoch.isoformat(),
+            )
 
         logger.info("Creating PandaPower engine with stochastic DER profile")
         return PandaPowerEngine(

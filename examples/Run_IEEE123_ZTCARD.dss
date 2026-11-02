@@ -11,8 +11,10 @@ Clear
 ! BFS zone partitioning with NUM_RTU_ZONES=5 creates 5 control zones
 ! for the authorization experiment.
 !
-! DER portfolio: 15 rooftop PV sites (~75 kW each, 1.125 MW total ≈
-! 32% penetration on 3.5 MW peak). Sites are spread across the feeder
+! DER portfolio: 25 rooftop PV sites (~75 kW each, 1.875 MW total ≈
+! 54% penetration on 3.5 MW peak). Raised from 15 for ztcard-stack #1270 —
+! see the zone-fleet block below for why an even per-zone fleet is required
+! and what the uneven one broke. Sites are spread across the feeder
 ! by BFS depth so the data-init zone partitioner distributes them
 ! across the 5 zones. Buses 33/67/114/300 are intentionally skipped
 ! (PowerGym's batteries already live there). Each PV is mounted via a
@@ -129,11 +131,92 @@ New Transformer.pv_up_92  phases=1 Xhl=5.75
 ~ wdg=2 bus=trafo_pv_92  kV=0.24 kVA=100
 New PVSystem.PV_92  phases=1 bus1=trafo_pv_92  kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
 
+
+! ── Zone-fleet sites (10, added 2026-09-15 for ztcard-stack #1270) ─────────
+! The 15 sites above were placed "by BFS depth so the data-init zone
+! partitioner distributes them across the 5 zones" (see header). That intent
+! silently failed: the partitioner put 9 of 15 in zone 0, 2 each in zones 1/3/4
+! and NONE in zone 2. A hand-placed list that must agree with a computed
+! partition, with nothing checking it -- the same defect that moved the
+! backbone-line lists three times (ztcard-stack #1236, #1244, #1255).
+!
+! Consequences it caused, both in the corpus before this was found:
+!   * S7 der_aggregation dispatches a same-zone DER fleet, so the attack was
+!     only ever expressible in zone 0. Benign coordinated dispatch picks a zone
+!     uniformly, so it landed mostly in zones that could not field a fleet --
+!     making "which zone" a shortcut separating attack from benign.
+!   * Zone 2 owned no DER at all, so a fifth of the feeder was outside the
+!     experiment entirely.
+!
+! These 10 bring every zone to >=4 DERs. Placement is still by hand and will
+! drift again the moment the partition moves; what stops that is the assertion
+! in data-init (_assert_every_zone_has_a_der_fleet), not this comment.
+!
+! Phases are taken from IEEE123Master.dss per bus, not assumed: buses 58, 69,
+! 45, 73 and 112 are single-phase and mounting a PV on a phase they do not own
+! would leave a floating node.
+
+New Transformer.pv_up_58  phases=1 Xhl=5.75
+~ wdg=1 bus=58.2   kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_58  kV=0.24 kVA=100
+New PVSystem.PV_58  phases=1 bus1=trafo_pv_58  kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_69  phases=1 Xhl=5.75
+~ wdg=1 bus=69.1   kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_69  kV=0.24 kVA=100
+New PVSystem.PV_69  phases=1 bus1=trafo_pv_69  kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_40  phases=1 Xhl=5.75
+~ wdg=1 bus=40.1   kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_40  kV=0.24 kVA=100
+New PVSystem.PV_40  phases=1 bus1=trafo_pv_40  kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_45  phases=1 Xhl=5.75
+~ wdg=1 bus=45.1   kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_45  kV=0.24 kVA=100
+New PVSystem.PV_45  phases=1 bus1=trafo_pv_45  kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_50  phases=1 Xhl=5.75
+~ wdg=1 bus=50.1   kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_50  kV=0.24 kVA=100
+New PVSystem.PV_50  phases=1 bus1=trafo_pv_50  kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_55  phases=1 Xhl=5.75
+~ wdg=1 bus=55.1   kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_55  kV=0.24 kVA=100
+New PVSystem.PV_55  phases=1 bus1=trafo_pv_55  kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_73  phases=1 Xhl=5.75
+~ wdg=1 bus=73.3   kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_73  kV=0.24 kVA=100
+New PVSystem.PV_73  phases=1 bus1=trafo_pv_73  kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_112  phases=1 Xhl=5.75
+~ wdg=1 bus=112.1   kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_112  kV=0.24 kVA=100
+New PVSystem.PV_112  phases=1 bus1=trafo_pv_112  kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_80  phases=1 Xhl=5.75
+~ wdg=1 bus=80.1   kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_80  kV=0.24 kVA=100
+New PVSystem.PV_80  phases=1 bus1=trafo_pv_80  kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+New Transformer.pv_up_93  phases=1 Xhl=5.75
+~ wdg=1 bus=93.1   kV=2.4 kVA=100
+~ wdg=2 bus=trafo_pv_93  kV=0.24 kVA=100
+New PVSystem.PV_93  phases=1 bus1=trafo_pv_93  kV=0.24 kVA=100 irrad=0.98 Pmpp=75 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
 ! ============================================================================
-! Re-establish voltage bases for the new 0.24 kV step-up transformer
-! secondaries so OpenDSS reports per-unit voltages correctly on the new buses.
+! Re-establish voltage bases for the new PV step-up transformer secondaries so
+! OpenDSS reports per-unit voltages correctly on the new buses. VoltageBases
+! entries are line-to-line; the PV step-up windings are rated 0.24 kV
+! line-to-NEUTRAL on a single-phase secondary (LL-equivalent 0.24*sqrt(3) =
+! 0.415692 kV). Listing 0.24 made CalcVoltageBases snap those nodes to the
+! nearest base of 0.48 instead, so a healthy 1.0 pu node read as 0.24/(0.48/sqrt(3)) =
+! 0.866 pu. Measured before/after on this feeder: min node pu 0.853 -> 0.979,
+! nodes under 0.95 pu 25 -> 0, matching the stock (no-PV) feeder's 0.979 floor.
 ! ============================================================================
-Set VoltageBases = [4.16, 0.48, 0.24]
+Set VoltageBases = [4.16, 0.48, 0.415692]
 CalcVoltageBases
 
 ! Solve a snapshot power flow so the PV systems initialize against the

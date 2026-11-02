@@ -31,6 +31,26 @@ from .metrics import get_prometheus_metrics
 logger = logging.getLogger(__name__)
 
 
+def _engine_solution_hour(engine: object) -> Optional[int]:
+    """The hour the engine's next Solve() evaluates loadshapes at, or None.
+
+    `/state` and `/reset` used to report `engine._pinned_hour`, which is only
+    the fallback used when NO sim-clock anchor exists. Under the substrate
+    every engine IS anchored, so that field stays at whatever reset() last
+    drew while the physics tracks sim time -- an anchored run recorded an
+    hour unrelated to the irradiance its PVs actually saw, and an episode
+    whose artifact said "hour 15, DER output 0.0 MW" read as a defect in the
+    DER coupling rather than as a measurement taken after dark.
+
+    Returns None only for an engine with no such method (PandaPowerEngine),
+    where the caller already treats a missing hour as unknown.
+    """
+    getter = getattr(engine, "solution_hour", None)
+    if getter is None:
+        return None
+    return int(getter())
+
+
 class GridVisualizationAPI:
     """
     Web API server for grid visualization.
@@ -117,23 +137,46 @@ class GridVisualizationAPI:
             loads.  Both engines run a power flow before returning so the state
             is valid immediately after this call.
 
-            The simulation loop is stopped before resetting and restarted after.
-            OpenDSS uses global C-library state that is not thread-safe — calling
-            reset() while the simulation thread is mid-Solve() causes a crash.
-            Stopping the loop first eliminates the race.
+            The simulation loop is stopped before resetting and restarted after,
+            AND the engine lock is held across the reset. OpenDSS uses global
+            C-library state that is not thread-safe.
+
+            Stopping the loop is not sufficient on its own, which is what this
+            endpoint got wrong until 2026-09-26. Two holes:
+
+              1. `stop()` joins with `timeout=5.0` and returns regardless. A
+                 simulation thread mid-`Solve()` on IEEE-8500 can outlive that
+                 timeout, so the "stopped" loop is still inside the C library.
+              2. Modbus write handlers are never stopped at all. They run for
+                 the whole episode and call `engine.set_breaker_status` /
+                 `set_generator_setpoint` under `engine_lock` — a lock this
+                 endpoint did not take, so `Clear`+`Compile` ran concurrently
+                 with them.
+
+            The observed result was a partially-built circuit rather than a
+            segfault: corpus job 22702 reset IEEE-123 into `num_buses=0,
+            num_elements=64`, and OpenDSS reported no error — it was caught
+            only by the post-compile non-empty assertion added for #1294. The
+            same defect on IEEE-8500 stopped job 22693. Before that assertion
+            existed, episodes simply continued against the wreckage.
+
+            `engine_lock` is an RLock and is the documented serialization point
+            for ALL engine access (see `GridSimulator.engine_lock`), so taking
+            it here is the fix the invariant already called for.
             """
             was_running = self.simulator.running
             if was_running:
                 self.simulator.stop()
             try:
-                self.simulator.engine.reset()
-                pinned_hour = getattr(self.simulator.engine, "_pinned_hour", None)
-                logger.info("Grid engine reset via /reset (hour=%s)", pinned_hour)
+                with self.simulator.engine_lock:
+                    self.simulator.engine.reset()
+                reset_hour = _engine_solution_hour(self.simulator.engine)
+                logger.info("Grid engine reset via /reset (hour=%s)", reset_hour)
                 return jsonify(
                     {
                         "status": "ok",
                         "message": "Grid reset to initial state",
-                        "simulation_hour": pinned_hour,
+                        "simulation_hour": reset_hour,
                     }
                 )
             except Exception as e:
@@ -147,20 +190,37 @@ class GridVisualizationAPI:
         def get_topology():
             """Get static network topology for zone partitioning and graph analysis.
 
-            Returns bus/line/generator/storage connectivity without power-flow
-            results.  Consumers (e.g. data-init) use this to derive zone
-            assignments via BFS without importing any simulator library.
+            Returns bus/line/transformer/generator/storage connectivity without
+            power-flow results.  Consumers (e.g. data-init) use this to derive
+            zone assignments via BFS without importing any simulator library.
+
+            Transformers are included because they are real SCADA telemetry
+            points (tap changers, regulators) that RTUs/IEDs monitor, so
+            consumers need a zone for them. Regulators are served under their
+            OWN key, not folded into `transformers`: `NetworkTopology`
+            relabels a tap-controlled transformer out of `transformers` into
+            `regulators` the moment it identifies one (see that model's
+            docstring), so a consumer reading only `transformers` sees none of
+            them and cannot assign them a zone at all. Loads are deliberately
+            NOT exposed: individual service-point loads are AMI meters, not
+            SCADA points, they carry no command surface, and being leaf
+            attachments they contribute nothing to bus adjacency or the BFS
+            partition.
 
             Response schema:
-              buses:      {bus_id: {bus_type: str}}
-              lines:      {line_id: {from_bus: int, to_bus: int}}
-              generators: {gen_id:  {bus: int}}
-              storage:    {stor_id: {bus: int}}
+              buses:        {bus_id:   {bus_type: str}}
+              lines:        {line_id:  {from_bus: int, to_bus: int}}
+              transformers: {trafo_id: {hv_bus: int, lv_bus: int}}
+              regulators:   {reg_id:   {hv_bus: int, lv_bus: int,
+                                          stock_vreg_volts: float}}
+              generators:   {gen_id:   {bus: int}}
+              storage:      {stor_id:  {bus: int}}
             """
             try:
                 topology = self.simulator.get_cached_topology()
                 if topology is None:
                     return jsonify({"error": "Topology not cached yet"}), 503
+                stock_vreg = self.simulator.get_stock_regulator_vreg()
                 return jsonify(
                     {
                         "buses": {
@@ -173,6 +233,21 @@ class GridVisualizationAPI:
                                 "to_bus": info.to_bus,
                             }
                             for line_id, info in topology.lines.items()
+                        },
+                        "transformers": {
+                            str(trafo_id): {
+                                "hv_bus": info.hv_bus,
+                                "lv_bus": info.lv_bus,
+                            }
+                            for trafo_id, info in topology.transformers.items()
+                        },
+                        "regulators": {
+                            str(reg_id): {
+                                "hv_bus": info.hv_bus,
+                                "lv_bus": info.lv_bus,
+                                "stock_vreg_volts": stock_vreg[int(reg_id)],
+                            }
+                            for reg_id, info in topology.regulators.items()
                         },
                         "generators": {
                             str(gen_id): {"bus": info.bus}
@@ -190,7 +265,19 @@ class GridVisualizationAPI:
 
         @self.app.route("/health")
         def health():
-            """Health check endpoint."""
+            """Health check endpoint; 503 once the simulator has halted on failure."""
+            halted_reason = self.simulator.halted_reason
+            if halted_reason is not None:
+                return (
+                    jsonify(
+                        {
+                            "status": "unhealthy",
+                            "simulator_running": self.simulator.running,
+                            "halted_reason": halted_reason,
+                        }
+                    ),
+                    503,
+                )
             return jsonify(
                 {"status": "ok", "simulator_running": self.simulator.running}
             )
@@ -599,7 +686,14 @@ class GridVisualizationAPI:
                     for gen_unit in self._topology_cache["generators"]:
                         gen_id = gen_unit["id"]
                         if gen_id in state.generators:
-                            gen_unit["p_kw"] = state.generators[gen_id].p_mw * 1000
+                            measurement = state.generators[gen_id]
+                            gen_unit["p_kw"] = measurement.p_mw * 1000
+                            gen_unit["voltage_pu"] = measurement.voltage_pu
+                            # reset() fuzzes Pmpp after topology was cached.
+                            # Publish that state's nameplate with its voltage
+                            # so DERMS does not command against stale capacity.
+                            if measurement.nameplate_kw is not None:
+                                gen_unit["max_p_kw"] = measurement.nameplate_kw
                 if "storage" in self._topology_cache:
                     for storage_unit in self._topology_cache["storage"]:
                         storage_id = storage_unit["id"]
@@ -615,6 +709,7 @@ class GridVisualizationAPI:
                     "topology": self._topology_cache,
                     "state": {
                         "bus_voltage": [],
+                        "bus_voltage_ids": [],
                         "line_status": [],
                         "line_loading": [],
                         "converged": False,
@@ -625,6 +720,7 @@ class GridVisualizationAPI:
             # Extract bus voltages and phase angles from GridState
             bus_voltages = []
             bus_angles = []
+            bus_voltage_ids = []
             for bus_id in sorted(state.buses.keys()):
                 voltage = state.buses[bus_id].voltage_pu
                 angle = state.buses[bus_id].angle_deg
@@ -635,6 +731,24 @@ class GridVisualizationAPI:
                     angle = 0.0
                 bus_voltages.append(float(voltage))
                 bus_angles.append(float(angle))
+                bus_voltage_ids.append(int(bus_id))
+
+            # state.buses and topology.buses are populated by separate code
+            # paths; nothing enforces their key sets stay identical. A
+            # divergence here means bus_voltage_ids and topology bus_metadata
+            # ids silently disagree downstream, so surface it rather than
+            # let it pass unnoticed.
+            state_bus_ids = set(state.buses.keys())
+            topology_bus_ids = set(topology.buses.keys())
+            if state_bus_ids != topology_bus_ids:
+                only_in_state = state_bus_ids - topology_bus_ids
+                only_in_topology = topology_bus_ids - state_bus_ids
+                logger.warning(
+                    "state.buses and topology.buses key sets differ: "
+                    "only_in_state=%s only_in_topology=%s",
+                    sorted(only_in_state),
+                    sorted(only_in_topology),
+                )
 
             # Extract line status, loading, and power flows from GridState
             line_status = []
@@ -724,6 +838,7 @@ class GridVisualizationAPI:
                 "topology": self._topology_cache,
                 "state": {
                     "bus_voltage": bus_voltages,
+                    "bus_voltage_ids": bus_voltage_ids,
                     "bus_angle": bus_angles,
                     "line_status": line_status,
                     "line_loading": line_loading,
@@ -738,9 +853,7 @@ class GridVisualizationAPI:
                     "frequency_hz": frequency_hz,
                     "converged": self.simulator.last_step_converged,
                     "sim_time": self.simulator.current_time,
-                    "simulation_hour": getattr(
-                        self.simulator.engine, "_pinned_hour", None
-                    ),
+                    "simulation_hour": _engine_solution_hour(self.simulator.engine),
                     # Non-zero means some bus results were NaN/inf-substituted.
                     # Distinct from converged=False (global failure); this is
                     # bus-level partial non-convergence granularity.

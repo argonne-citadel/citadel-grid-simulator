@@ -675,6 +675,11 @@ class PandaPowerEngine(PowerSystemEngine):
             raise KeyError(f"Line {line_id} not found")
         self.net.line.at[line_id, "in_service"] = bool(closed)
 
+    def open_line_ids(self) -> frozenset[LineID]:
+        """Lines currently out of service."""
+        out_of_service = self.net.line.index[~self.net.line["in_service"].astype(bool)]
+        return frozenset(LineID(int(idx)) for idx in out_of_service)
+
     def set_reactor_gen_output(
         self,
         gen_id: int,

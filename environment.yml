@@ -8,7 +8,15 @@ dependencies:
   - numba=0.64
   - pandapower=3.2
   - pydantic=2.12
-  - pymodbus=3.12
+  # Exact patch pin: pymodbus's API moves within patch releases. 3.14 did not
+  # just rename -- it replaced the datastore with SimData/SimDevice/SimCore, so
+  # the data-block subclass that used to intercept master writes is now built
+  # and never called. A drifting pin means that lands silently: the server
+  # accepts breaker and setpoint commands and applies none of them.
+  # tests/stack/test_pymodbus_signature_contract_unit.py freezes the surface;
+  # verify it there when bumping this.
+  # Keep in sync with pyproject.toml's [project.dependencies] (see 33c4c01).
+  - pymodbus=3.15.0
   - python-dotenv=1.2
   - structlog=25.5
   - pip=26.0

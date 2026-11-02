@@ -12,7 +12,41 @@ Clear
 ! DER portfolio: 15 rooftop PV clusters (3 per zone × 5 zones), ~3.25 MW total
 ! (~30% penetration on 11 MW peak). Each "PV system" represents an aggregation
 ! of 10-30 residential rooftop installations on a single service lateral.
-! All host buses are verified single-phase primary nodes (nodes=[1], 7.2 kV).
+! All host buses are verified primary nodes owning the phase they're
+! assigned to (checked via dss.Bus.Nodes()), 7.2 kV.
+!
+! Phase siting (2026-10): all 20 PVSystems (this cluster portfolio plus the
+! 5 zone-fleet units below) originally sat on phase-1-ONLY laterals, ~3 MW
+! concentrated on a single phase. With voltage bases fixed (see below), night
+! hours matched stock (0.926-1.050 pu) but midday (PV at ~3 MW on one phase)
+! read 0.826-1.103 pu with 2,711 nodes under 0.95 pu and phase-B regulators
+! pinned at tap 16 -- confirmed concentration, not a sizing problem (scaling
+! all PV to 1/3 gave 0.918-1.055 with no siting change). 15 of the 20 were
+! re-sited to the nearest upstream bus on the same feeder path that actually
+! owns the target phase (dss.Bus.Nodes()), keeping every name/kVA/Pmpp
+! unchanged and primary kV=7.2. Final split ~1050/1250/1450 kW across
+! phases 1/2/3 (not perfectly even: an exact 1250/1250/1250 LPT-balanced
+! split left hours 12-14 at 1.0581-1.0583 pu, ~0.0003 over the 1.058 Range B
+! ceiling, from feeder-head regulator response to the phase-1/2 PV offset;
+! shifting ~200 kW from phase 1 to phase 3 brought every hour 0-23 inside
+! ANSI C84.1 Range B, 0.917-1.058 pu). Original bus.phase -> new bus.phase
+! (hop = BFS hops walked upstream to find a bus owning the target phase;
+! unlisted units are unchanged, 0 hops):
+!   pv_up_z1a  l2766729.1  -> m1047316.2   hop=2
+!   pv_up_z2a  l3727712.1  -> m1047490.3   hop=8
+!   pv_up_z4a  m3016088.1  -> m1027055.2   hop=28
+!   pv_up_z0b  l3217056.1  -> m1209791.3   hop=6
+!   pv_up_z1b  l2823545.1  -> m1108505.3   hop=17
+!   pv_up_z3b  l3235247.1  -> m1026960.2   hop=5
+!   pv_up_z4b  193-48013.1 -> m1069284.3   hop=8
+!   pv_up_z0c  p829797.1   -> m1108484.3   hop=1
+!   pv_up_z1c  l2879054.1  -> m1089143.2   hop=9
+!   pv_up_z3c  l3122822.1  -> m1026701.2   hop=7
+!   pv_up_zf1  l3217056.1  -> m1209791.2   hop=6
+!   pv_up_zf2  p829797.1   -> m1108484.3   hop=1
+!   pv_up_zf3  l2823545.1  -> m1108505.3   hop=17
+!   pv_up_zf4  l3251854.1  -> m1069564.2   hop=6
+!   pv_up_zf5  l3235247.1  -> m1026960.3   hop=5
 !
 ! Usage: GRID_MODEL=/usr/app/examples/Run_IEEE8500_ZTCARD.dss
 
@@ -29,9 +63,11 @@ New Tshape.MyTemp npts=24 interval=1 temp=[25 25 25 25 25 25 25 25 35 40 45 50 6
 
 ! ============================================================================
 ! Zone 0 — near substation, east side (BFS depth 26-98)
-!   p827522:  deep lateral, dist=98, ~30 residential rooftops
-!   l3217056: near substation, dist=26, ~25 rooftops
-!   p829797:  deep lateral alternate, dist=97, ~10 rooftops
+!   p827522:  deep lateral, dist=98, ~30 residential rooftops (unchanged)
+!   l3217056: near substation, dist=26, ~25 rooftops (re-sited to
+!             m1209791.3, see siting table above)
+!   p829797:  deep lateral alternate, dist=97, ~10 rooftops (re-sited to
+!             m1108484.3, see siting table above)
 ! ============================================================================
 New Transformer.pv_up_z0a phases=1 Xhl=5.75
 ~ wdg=1 bus=p827522.1 kV=7.2 kVA=350
@@ -39,44 +75,49 @@ New Transformer.pv_up_z0a phases=1 Xhl=5.75
 New PVSystem.PV_0A phases=1 bus1=trafo_pv_z0a kV=0.24 kVA=350 irrad=0.98 Pmpp=300 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
 
 New Transformer.pv_up_z0b phases=1 Xhl=5.75
-~ wdg=1 bus=l3217056.1 kV=7.2 kVA=300
+~ wdg=1 bus=m1209791.3 kV=7.2 kVA=300
 ~ wdg=2 bus=trafo_pv_z0b kV=0.24 kVA=300
 New PVSystem.PV_0B phases=1 bus1=trafo_pv_z0b kV=0.24 kVA=300 irrad=0.98 Pmpp=250 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
 
 New Transformer.pv_up_z0c phases=1 Xhl=5.75
-~ wdg=1 bus=p829797.1 kV=7.2 kVA=125
+~ wdg=1 bus=m1108484.3 kV=7.2 kVA=125
 ~ wdg=2 bus=trafo_pv_z0c kV=0.24 kVA=125
 New PVSystem.PV_0C phases=1 bus1=trafo_pv_z0c kV=0.24 kVA=125 irrad=0.98 Pmpp=100 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
 
 ! ============================================================================
 ! Zone 1 — mid-feeder, south side (BFS depth 105-146)
-!   l2766729: deep lateral, dist=146
-!   l2823545: far south, dist=124
-!   l2879054: mid-feeder, dist=105
+!   l2766729: deep lateral, dist=146 (re-sited to m1047316.2, see siting
+!             table above)
+!   l2823545: far south, dist=124 (re-sited to m1108505.3, see siting table
+!             above)
+!   l2879054: mid-feeder, dist=105 (re-sited to m1089143.2, see siting
+!             table above)
 ! ============================================================================
 New Transformer.pv_up_z1a phases=1 Xhl=5.75
-~ wdg=1 bus=l2766729.1 kV=7.2 kVA=350
+~ wdg=1 bus=m1047316.2 kV=7.2 kVA=350
 ~ wdg=2 bus=trafo_pv_z1a kV=0.24 kVA=350
 New PVSystem.PV_1A phases=1 bus1=trafo_pv_z1a kV=0.24 kVA=350 irrad=0.98 Pmpp=300 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
 
 New Transformer.pv_up_z1b phases=1 Xhl=5.75
-~ wdg=1 bus=l2823545.1 kV=7.2 kVA=300
+~ wdg=1 bus=m1108505.3 kV=7.2 kVA=300
 ~ wdg=2 bus=trafo_pv_z1b kV=0.24 kVA=300
 New PVSystem.PV_1B phases=1 bus1=trafo_pv_z1b kV=0.24 kVA=300 irrad=0.98 Pmpp=250 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
 
 New Transformer.pv_up_z1c phases=1 Xhl=5.75
-~ wdg=1 bus=l2879054.1 kV=7.2 kVA=125
+~ wdg=1 bus=m1089143.2 kV=7.2 kVA=125
 ~ wdg=2 bus=trafo_pv_z1c kV=0.24 kVA=125
 New PVSystem.PV_1C phases=1 bus1=trafo_pv_z1c kV=0.24 kVA=125 irrad=0.98 Pmpp=100 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
 
 ! ============================================================================
 ! Zone 2 — mid-feeder, west-central (BFS depth 165-202)
-!   l3727712: deep lateral, dist=202
-!   l3104135: mid-range, dist=174
-!   l3251854: mid-feeder, dist=165
+!   l3727712: deep lateral, dist=202 (re-sited to m1047490.3, see siting
+!             table above)
+!   l3104135: mid-range, dist=174 (unchanged)
+!   l3251854: mid-feeder, dist=165 (unchanged; a second array, zf4, was
+!             later co-located at m1069564.2, see siting table above)
 ! ============================================================================
 New Transformer.pv_up_z2a phases=1 Xhl=5.75
-~ wdg=1 bus=l3727712.1 kV=7.2 kVA=350
+~ wdg=1 bus=m1047490.3 kV=7.2 kVA=350
 ~ wdg=2 bus=trafo_pv_z2a kV=0.24 kVA=350
 New PVSystem.PV_2A phases=1 bus1=trafo_pv_z2a kV=0.24 kVA=350 irrad=0.98 Pmpp=300 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
 
@@ -92,9 +133,12 @@ New PVSystem.PV_2C phases=1 bus1=trafo_pv_z2c kV=0.24 kVA=125 irrad=0.98 Pmpp=10
 
 ! ============================================================================
 ! Zone 3 — deep feeder, south-west (BFS depth 233-234)
-!   n1138596: deep lateral, dist=234
-!   l3235247: deep lateral alternate, dist=233
-!   l3122822: deep lateral alternate, dist=233
+!   n1138596: deep lateral, dist=234 (unchanged)
+!   l3235247: deep lateral alternate, dist=233 (re-sited to m1026960.2, see
+!             siting table above; a second array, zf5, was later co-located
+!             at m1026960.3)
+!   l3122822: deep lateral alternate, dist=233 (re-sited to m1026701.2, see
+!             siting table above)
 ! ============================================================================
 New Transformer.pv_up_z3a phases=1 Xhl=5.75
 ~ wdg=1 bus=n1138596.1 kV=7.2 kVA=350
@@ -102,28 +146,30 @@ New Transformer.pv_up_z3a phases=1 Xhl=5.75
 New PVSystem.PV_3A phases=1 bus1=trafo_pv_z3a kV=0.24 kVA=350 irrad=0.98 Pmpp=300 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
 
 New Transformer.pv_up_z3b phases=1 Xhl=5.75
-~ wdg=1 bus=l3235247.1 kV=7.2 kVA=300
+~ wdg=1 bus=m1026960.2 kV=7.2 kVA=300
 ~ wdg=2 bus=trafo_pv_z3b kV=0.24 kVA=300
 New PVSystem.PV_3B phases=1 bus1=trafo_pv_z3b kV=0.24 kVA=300 irrad=0.98 Pmpp=250 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
 
 New Transformer.pv_up_z3c phases=1 Xhl=5.75
-~ wdg=1 bus=l3122822.1 kV=7.2 kVA=125
+~ wdg=1 bus=m1026701.2 kV=7.2 kVA=125
 ~ wdg=2 bus=trafo_pv_z3c kV=0.24 kVA=125
 New PVSystem.PV_3C phases=1 bus1=trafo_pv_z3c kV=0.24 kVA=125 irrad=0.98 Pmpp=100 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
 
 ! ============================================================================
 ! Zone 4 — feeder tail, north-west (BFS depth 248-274)
-!   m3016088:  deep lateral, dist=274
-!   193-48013: mid-range, dist=257
-!   l3065696:  mid-feeder, dist=248
+!   m3016088:  deep lateral, dist=274 (re-sited to m1027055.2, see siting
+!              table above)
+!   193-48013: mid-range, dist=257 (re-sited to m1069284.3, see siting
+!              table above)
+!   l3065696:  mid-feeder, dist=248 (unchanged)
 ! ============================================================================
 New Transformer.pv_up_z4a phases=1 Xhl=5.75
-~ wdg=1 bus=m3016088.1 kV=7.2 kVA=350
+~ wdg=1 bus=m1027055.2 kV=7.2 kVA=350
 ~ wdg=2 bus=trafo_pv_z4a kV=0.24 kVA=350
 New PVSystem.PV_4A phases=1 bus1=trafo_pv_z4a kV=0.24 kVA=350 irrad=0.98 Pmpp=300 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
 
 New Transformer.pv_up_z4b phases=1 Xhl=5.75
-~ wdg=1 bus=193-48013.1 kV=7.2 kVA=300
+~ wdg=1 bus=m1069284.3 kV=7.2 kVA=300
 ~ wdg=2 bus=trafo_pv_z4b kV=0.24 kVA=300
 New PVSystem.PV_4B phases=1 bus1=trafo_pv_z4b kV=0.24 kVA=300 irrad=0.98 Pmpp=250 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
 
@@ -132,10 +178,67 @@ New Transformer.pv_up_z4c phases=1 Xhl=5.75
 ~ wdg=2 bus=trafo_pv_z4c kV=0.24 kVA=125
 New PVSystem.PV_4C phases=1 bus1=trafo_pv_z4c kV=0.24 kVA=125 irrad=0.98 Pmpp=100 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
 
+
+! ── Zone-fleet sites (5, added 2026-09-15 for ztcard-stack #1270) ──────────
+! Every BFS zone must own >=4 DERs so a coordinated same-zone operation is
+! expressible in it. Both S7 der_aggregation and benign coordinated dispatch
+! write a same-zone fleet, and a zone that cannot field one silently removes
+! itself from the experiment. Enforced by _assert_every_zone_has_a_der_fleet,
+! which failed all five ieee_8500 cells of corpus 21818 with the measured
+! distribution {0:2, 1:4, 2:2, 3:4, 4:3}.
+!
+! The zNx naming above does NOT track the BFS partition: pv_up_z0a sits in
+! zone 1, z1b in zone 2, z3b in zone 4. Those names record intent at authoring
+! time while the partitioner decides the truth — the same drift that left
+! IEEE-123 with a zone owning no DER at all. These five are named zf* and their
+! zones are stated from the measured map, not inferred from a suffix.
+!
+! Each is co-located on a bus that already hosts a PV in the short zone, which
+! guarantees zone membership without needing the pandapower-index-to-OpenDSS
+! name mapping. A second array on one distribution transformer is ordinary.
+! 125 kVA, the smallest existing tier, to limit the power-flow change.
+
+! zf1: zone 0, co-located with der-pv-0b
+New Transformer.pv_up_zf1 phases=1 Xhl=5.75
+~ wdg=1 bus=m1209791.2 kV=7.2 kVA=125
+~ wdg=2 bus=trafo_pv_zf1 kV=0.24 kVA=125
+New PVSystem.PV_ZF1 phases=1 bus1=trafo_pv_zf1 kV=0.24 kVA=125 irrad=0.98 Pmpp=100 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+! zf2: zone 0, co-located with der-pv-0c
+New Transformer.pv_up_zf2 phases=1 Xhl=5.75
+~ wdg=1 bus=m1108484.3 kV=7.2 kVA=125
+~ wdg=2 bus=trafo_pv_zf2 kV=0.24 kVA=125
+New PVSystem.PV_ZF2 phases=1 bus1=trafo_pv_zf2 kV=0.24 kVA=125 irrad=0.98 Pmpp=100 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+! zf3: zone 2, co-located with der-pv-1b
+New Transformer.pv_up_zf3 phases=1 Xhl=5.75
+~ wdg=1 bus=m1108505.3 kV=7.2 kVA=125
+~ wdg=2 bus=trafo_pv_zf3 kV=0.24 kVA=125
+New PVSystem.PV_ZF3 phases=1 bus1=trafo_pv_zf3 kV=0.24 kVA=125 irrad=0.98 Pmpp=100 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+! zf4: zone 2, co-located with der-pv-2c
+New Transformer.pv_up_zf4 phases=1 Xhl=5.75
+~ wdg=1 bus=m1069564.2 kV=7.2 kVA=125
+~ wdg=2 bus=trafo_pv_zf4 kV=0.24 kVA=125
+New PVSystem.PV_ZF4 phases=1 bus1=trafo_pv_zf4 kV=0.24 kVA=125 irrad=0.98 Pmpp=100 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
+! zf5: zone 4, co-located with der-pv-3b
+New Transformer.pv_up_zf5 phases=1 Xhl=5.75
+~ wdg=1 bus=m1026960.3 kV=7.2 kVA=125
+~ wdg=2 bus=trafo_pv_zf5 kV=0.24 kVA=125
+New PVSystem.PV_ZF5 phases=1 bus1=trafo_pv_zf5 kV=0.24 kVA=125 irrad=0.98 Pmpp=100 temperature=25 PF=1 effcurve=Myeff P-TCurve=MyPvsT Daily=MyIrrad TDaily=MyTemp
+
 ! ============================================================================
 ! Solve configuration
 ! ============================================================================
-Set VoltageBases = "115, 12.47, 0.48, 0.24"
+! Voltage bases are line-to-line. 0.208 is the stock feeder's own base for its
+! ~4,500 120/240 V split-phase service-transformer secondaries (ieee8500/
+! Master.dss uses it already) -- without it those nodes get snapped to the
+! nearest base of 0.24 and a healthy node reads ~0.87 pu. 0.415692 is for the
+! PV step-up secondaries added above: they are rated 0.24 kV line-to-NEUTRAL
+! on a single-phase winding (LL-equivalent 0.24*sqrt(3) = 0.415692 kV), same
+! reasoning as Run_IEEE123_ZTCARD.dss.
+Set VoltageBases = "115, 12.47, 0.48, 0.415692, 0.208"
 CalcVoltageBases
 Set mode=daily
 Set stepsize=1h

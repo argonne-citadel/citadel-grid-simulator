@@ -16,8 +16,19 @@ from .schemas.commands import (
     StorageCommand,
 )
 from .schemas.state import GridState
+from .schemas.topology import NetworkTopology
 
 logger = logging.getLogger(__name__)
+
+# A step loop runs at 1 s wall time, so 5 consecutive failures is about five
+# seconds of continuous failure. A one- or two-step glitch (a rejected command,
+# one bad solve) recovers on its own; five in a row means the state is wedged,
+# and the alternative is publishing nothing for weeks, as job 23084 did.
+MAX_CONSECUTIVE_FAILED_STEPS = 5
+
+
+class SimulatorHalted(RuntimeError):
+    """The simulator stopped itself; the process must exit so the run fails."""
 
 
 class GridSimulator:
@@ -65,9 +76,8 @@ class GridSimulator:
         # engine.get_topology() from the Flask thread.  OpenDSS uses
         # global C-library state; concurrent access from multiple threads
         # causes segfaults on large models (IEEE 8500).
-        from .schemas.topology import NetworkTopology
-
         self._cached_topology: Optional[NetworkTopology] = None
+        self._stock_regulator_vreg: Dict[int, float] = {}
 
         # Engine lock — serializes ALL engine access across threads.
         # The simulation thread holds this during step() (run_simulation +
@@ -94,6 +104,12 @@ class GridSimulator:
         # would otherwise remain True after a NR failure (since no new GridState
         # is appended to state_history when step() throws).
         self.last_step_converged: bool = True
+
+        # Consecutive step() exceptions, reset by any success. At
+        # MAX_CONSECUTIVE_FAILED_STEPS the loop halts and `halted_reason` is set,
+        # which the web API /health endpoint reports as unhealthy.
+        self.consecutive_failed_steps = 0
+        self.halted_reason: Optional[str] = None
 
         logger.info(f"GridSimulator initialized with {timestep_seconds}s timestep")
 
@@ -328,13 +344,30 @@ class GridSimulator:
                 # masked non-converged solves from /state and downstream attack-
                 # prevention metrics. The except below still sets False on raise.
                 self.last_step_converged = bool(result.converged)
+                self.consecutive_failed_steps = 0
 
             except Exception as e:
                 logger.error(f"Error in simulation step: {e}")
                 self.stats["failed_steps"] += 1
+                self.consecutive_failed_steps += 1
+                if self.consecutive_failed_steps >= MAX_CONSECUTIVE_FAILED_STEPS:
+                    self.halt(
+                        f"{self.consecutive_failed_steps} consecutive failed "
+                        f"simulation steps; last error: {e}"
+                    )
                 # Mark non-convergence. Written here so web_api can expose it in /state
                 # rather than returning the stale pre-islanding state's converged=True.
                 self.last_step_converged = False
+
+    def halt(self, reason: str) -> None:
+        """Stop the simulation loop and record why, so /health reports unhealthy.
+
+        Args:
+            reason: Human-readable cause, surfaced by the health endpoint.
+        """
+        logger.critical("Halting simulation: %s", reason)
+        self.halted_reason = reason
+        self.running = False
 
     def _run_loop(self, duration_seconds: Optional[float] = None):
         """
@@ -415,6 +448,9 @@ class GridSimulator:
         without touching the engine (safe from any thread).
         """
         self._cached_topology = self.engine.get_topology()
+        self._stock_regulator_vreg = self._read_stock_regulator_vreg(
+            self._cached_topology
+        )
         logger.info(
             "Topology cached: %d buses, %d lines, %d generators, %d loads",
             len(self._cached_topology.buses),
@@ -426,6 +462,30 @@ class GridSimulator:
     def get_cached_topology(self):
         """Return the cached topology (thread-safe, no engine calls)."""
         return self._cached_topology
+
+    def get_stock_regulator_vreg(self) -> Dict[int, float]:
+        """{regulator id: ForwardVreg volts as compiled from the DSS model}.
+
+        Captured with the topology, before the simulation loop starts and so
+        before any setpoint write. `reset()` recompiles the model, which
+        restores exactly these values, so they stay the feeder's planned
+        setpoints for the life of the process. behavior-sim's VVO persona
+        anchors its nudges here rather than on a band midpoint that can sit
+        5% away from the published feeder's own regulation.
+        """
+        return dict(self._stock_regulator_vreg)
+
+    def _read_stock_regulator_vreg(self, topology: NetworkTopology) -> Dict[int, float]:
+        if not topology.regulators:
+            return {}
+        read = getattr(self.engine, "get_regulator_voltage_setpoint", None)
+        if read is None:
+            raise TypeError(
+                f"Engine {type(self.engine).__name__} reports "
+                f"{len(topology.regulators)} regulator(s) but cannot read "
+                "their setpoints (no get_regulator_voltage_setpoint)."
+            )
+        return {int(reg_id): float(read(reg_id)) for reg_id in topology.regulators}
 
     def get_current_state(self) -> Optional[GridState]:
         """

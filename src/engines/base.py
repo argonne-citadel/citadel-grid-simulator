@@ -287,6 +287,17 @@ class PowerSystemEngine(ABC):
         pass
 
     @abstractmethod
+    def open_line_ids(self) -> frozenset[LineID]:
+        """Lines whose breaker is currently open.
+
+        Live state, not the startup topology: the Modbus breaker status coils
+        are published from this, so a snapshot that ignores
+        `set_breaker_status` makes every status read report the startup state.
+        Must be cheap: it is called once per simulation step, and IEEE-8500
+        has thousands of lines.
+        """
+
+    @abstractmethod
     def reset(self) -> None:
         """Reset to clean initial state with stochastic load variation.
 

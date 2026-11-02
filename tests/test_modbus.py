@@ -1,11 +1,17 @@
 """Tests for Modbus TCP server interface."""
 
+import asyncio
+
 import pytest
 from src.models.dickert_lv import DickertLVModel
 from src.simulator import GridSimulator
 from src.engines.pandapower_engine import PandaPowerEngine
 from src.schemas.commands import CommandType, BreakerCommand, GeneratorCommand
-from src.protocols.modbus_server import GridModbusServer, GridModbusDataBlock
+from src.protocols.modbus_server import (
+    GridModbusServer,
+    GridModbusWriteHandler,
+    StrictDeviceSimCore,
+)
 
 
 class TestModbusServer:
@@ -60,17 +66,25 @@ class TestModbusServer:
             assert 5000 <= hr_idx < 6000, f"Load HR index {hr_idx} out of range"
 
     def test_datastore_creation(self, simulator):
-        """Test that Modbus datastore is created with correct sizes."""
+        """Test that the Modbus datastore is created with correct sizes.
+
+        On pymodbus 3.14 _create_sim_device returns a SimDevice — a
+        description of the layout. The live register bank only exists once a
+        SimCore is built from it, which is what update_measurements writes
+        into, so assert on the built core rather than on the description.
+        """
         server = GridModbusServer(simulator.engine, host="127.0.0.1", port=5022)
         server._build_point_mapping()
-        context = server._create_datastore()
+        sim_device = server._create_sim_device()
 
-        # Context should be created
-        assert context is not None
+        assert sim_device is not None
+        # The write hook must be installed, or the server accepts breaker and
+        # setpoint commands and applies none of them.
+        assert sim_device.action is not None
 
-        # Should be able to retrieve device context for unit ID 1
-        device = context[1]
-        assert device is not None
+        core = StrictDeviceSimCore(sim_device)
+        assert 1 in core.devices
+        assert set(core.devices[1].block) == {"c", "d", "h", "i"}
 
     def test_get_point_mapping(self, simulator):
         """Test getting point mapping information."""
@@ -104,8 +118,8 @@ class TestModbusServer:
         assert server.update_measurements in simulator.state_update_callbacks
 
 
-class TestModbusDataBlock:
-    """Test suite for custom Modbus data block."""
+class TestModbusWriteHandler:
+    """Test suite for the SimDevice.action write handler."""
 
     @pytest.fixture
     def simulator(self):
@@ -117,11 +131,11 @@ class TestModbusDataBlock:
         yield sim
         sim.stop()
 
-    def test_data_block_initialization(self, simulator):
-        """Test data block can be initialized."""
+    def test_write_handler_initialization(self, simulator):
+        """Test the write handler can be initialized."""
         server = GridModbusServer(simulator.engine, host="127.0.0.1", port=5030)
-        block = GridModbusDataBlock(0, [0] * 100, server)
-        assert block.server == server
+        handler = GridModbusWriteHandler(server)
+        assert handler.server == server
 
 
 class TestModbusIntegration:
@@ -172,8 +186,9 @@ class TestModbusIntegration:
         """Test that Modbus server can update datastore from engine state."""
         sim, server = simulator_with_modbus
 
-        # Create datastore
-        server.context = server._create_datastore()
+        # Create datastore. start() does this via the server; here the core is
+        # built directly since no socket is bound.
+        server.context = StrictDeviceSimCore(server._create_sim_device())
 
         # Run simulation to generate state
         sim.step()
@@ -181,14 +196,11 @@ class TestModbusIntegration:
         # Update measurements from engine
         server.update_measurements()
 
-        # Verify datastore was updated
-        slave_context = server.context[1]
-
         # Check that at least some values were written
         # (exact values depend on simulation results)
         if 0 in server.bus_to_hr_index:
             hr_idx = server.bus_to_hr_index[0]
-            values = slave_context.getValues(3, hr_idx, 1)
+            values = asyncio.run(server.context.async_getValues(1, 3, hr_idx, 1))
             # Should have a non-zero voltage value (scaled by 1000)
             assert values[0] > 0, "Bus voltage should be updated in datastore"
 

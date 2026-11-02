@@ -23,20 +23,25 @@ RUN curl -LO https://sourceforge.net/projects/electricdss/files/OpenDSSCmd/opend
 ENV PATH="/usr/local/bin:${PATH}"
 
 # Fetch IEEE 8500-Node + IEEE 123 test feeders from Siemens PowerGym via
-# sparse clone. Only the needed system directories are checked out (~3 MB
-# vs ~200 MB full clone). --depth=1 fetches HEAD; the ARG documents the
-# validated commit hash. Override POWERGYM_COMMIT at build time if
-# upstream advances.
+# sparse checkout. Fetch the exact validated commit, independently of the
+# upstream default branch, and verify it before copying feeder inputs. Only
+# the needed system directories are checked out (~3 MB vs ~200 MB full clone).
 #
 # IEEE 123 (B3 / #1140): PowerGym's 123Bus ships with 4 batteries wired
 # in IEEE123Master.dss (kW=0 disconnected by default) and standalone
 # Solar/Wind ramp scripts useful as references. Per-zone PV portfolio is
 # authored in our Run_IEEE123_ZTCARD.dss wrapper.
 ARG POWERGYM_COMMIT=c9fc6d8357308a1f2bd2389474b56089c2a6bd78
-RUN git clone --depth 1 --filter=blob:none --sparse \
-      https://github.com/siemens/powergym.git /tmp/powergym && \
+RUN test "${#POWERGYM_COMMIT}" -eq 40 && \
+    case "${POWERGYM_COMMIT}" in *[!0-9a-f]*) exit 1 ;; esac && \
+    git init /tmp/powergym && \
     cd /tmp/powergym && \
+    git remote add origin https://github.com/siemens/powergym.git && \
+    git sparse-checkout init --cone && \
     git sparse-checkout set systems/8500-Node systems/123Bus && \
+    git fetch --depth 1 --filter=blob:none origin "${POWERGYM_COMMIT}" && \
+    git checkout --detach FETCH_HEAD && \
+    test "$(git rev-parse HEAD)" = "${POWERGYM_COMMIT}" && \
     mkdir -p /usr/app/examples/ieee8500 /usr/app/examples/ieee123 && \
     cp -r systems/8500-Node/* /usr/app/examples/ieee8500/ && \
     cp -r systems/123Bus/* /usr/app/examples/ieee123/ && \
